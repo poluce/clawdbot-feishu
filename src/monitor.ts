@@ -4,6 +4,7 @@ import type { FeishuConfig } from "./types.js";
 import { createFeishuWSClient, createEventDispatcher } from "./client.js";
 import { resolveFeishuCredentials } from "./accounts.js";
 import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
+import { handleFeishuMenuEvent, type FeishuMenuEvent } from "./menu.js";
 import { probeFeishu } from "./probe.js";
 
 export type MonitorFeishuOpts = {
@@ -105,6 +106,18 @@ async function monitorWebSocket(params: {
         log(`feishu: bot removed from chat ${event.chat_id}`);
       } catch (err) {
         error(`feishu: error handling bot removed event: ${String(err)}`);
+      }
+    },
+    "application.bot.menu_v6": async (data) => {
+      try {
+        const event = data as unknown as FeishuMenuEvent;
+        await handleFeishuMenuEvent({
+          cfg,
+          event,
+          runtime,
+        });
+      } catch (err) {
+        error(`feishu: error handling menu event: ${String(err)}`);
       }
     },
   });
