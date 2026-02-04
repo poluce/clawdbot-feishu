@@ -42,6 +42,13 @@ export {
   buildMentionedCardContent,
   type MentionTarget,
 } from "./src/mention.js";
+export {
+  handleFeishuMenuEvent,
+  registerMenuHandler,
+  unregisterMenuHandler,
+  type FeishuMenuEvent,
+  type MenuHandler,
+} from "./src/menu.js";
 export { feishuPlugin } from "./src/channel.js";
 
 const plugin = {
