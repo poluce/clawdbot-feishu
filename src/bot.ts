@@ -85,7 +85,7 @@ function extractPermissionError(err: unknown): PermissionError | null {
 
   // Extract the grant URL from the error message (contains the direct link)
   const msg = feishuErr.msg ?? "";
-  const urlMatch = msg.match(/https:\/\/[^\s,]+\/app\/[^\s,]+/);
+  const urlMatch = msg.match(/https:\/\/open\.feishu\.cn\/app\/[^\s,]+/);
   const grantUrl = urlMatch?.[0];
 
   return {
@@ -549,6 +549,13 @@ export async function handleFeishuMessage(params: {
   let ctx = parseFeishuMessageEvent(event, botOpenId);
   const isGroup = ctx.chatType === "group";
 
+  // Skip menu command messages - they are handled by menu.ts via application.bot.menu_v6 event
+  // Menu commands look like "/help", "/status", etc.
+  if (!isGroup && ctx.content.match(/^\/[a-zA-Z]+$/)) {
+    log(`feishu: skipping menu command message '${ctx.content}', handled by menu event`);
+    return;
+  }
+
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
   const senderResult = await resolveFeishuSenderName({
     account,
@@ -891,6 +898,8 @@ export async function handleFeishuMessage(params: {
       replyToMessageId: ctx.messageId,
       mentionTargets: ctx.mentionTargets,
       accountId: account.accountId,
+      userMessageText: ctx.content,
+      userInputMode: ctx.contentType === "audio" ? "voice" : "text",
     });
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
