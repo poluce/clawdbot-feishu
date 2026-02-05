@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu, sendMarkdownCardFeishu } from "./send.js";
+import { shouldSendAsVoice, sendVoiceMessage, isTTSAvailable, updateInteraction } from "./tts.js";
 import type { FeishuConfig } from "./types.js";
 import type { MentionTarget } from "./mention.js";
 import {
@@ -36,11 +37,20 @@ export type CreateFeishuReplyDispatcherParams = {
   replyToMessageId?: string;
   /** Mention targets, will be auto-included in replies */
   mentionTargets?: MentionTarget[];
+  /** Original user message text (for voice/text mode detection) */
+  userMessageText?: string;
+  /** User input mode (voice or text) */
+  userInputMode?: "voice" | "text";
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
   const core = getFeishuRuntime();
-  const { cfg, agentId, chatId, replyToMessageId, mentionTargets } = params;
+  const { cfg, agentId, chatId, replyToMessageId, mentionTargets, userMessageText, userInputMode } = params;
+
+  // Update interaction state for voice/text detection
+  if (userInputMode) {
+    updateInteraction(userInputMode);
+  }
 
   const prefixContext = createReplyPrefixContext({
     cfg,
@@ -106,8 +116,28 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           return;
         }
 
-        // Check render mode: auto (default), raw, or card
+        // Check if TTS is available and should use voice
         const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
+        const ttsEnabled = feishuCfg?.tts?.enabled !== false; // Default enabled
+        
+        if (ttsEnabled && isTTSAvailable() && shouldSendAsVoice(text, userMessageText)) {
+          // Voice mode: send as audio message
+          params.runtime.log?.(`feishu deliver: sending voice message to ${chatId}`);
+          try {
+            await sendVoiceMessage({
+              cfg,
+              to: chatId,
+              text: text,
+              replyToMessageId,
+            });
+            return;
+          } catch (err) {
+            params.runtime.error?.(`feishu voice send failed, falling back to text: ${String(err)}`);
+            // Fall through to text mode
+          }
+        }
+
+        // Check render mode: auto (default), raw, or card
         const renderMode = feishuCfg?.renderMode ?? "auto";
 
         // Determine if we should use card for this message
