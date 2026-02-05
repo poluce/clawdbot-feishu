@@ -1,6 +1,8 @@
 /**
  * TTS (Text-to-Speech) module for Feishu
  * Generates audio using local sherpa-onnx and sends as voice message
+ * 
+ * Configuration loaded from skill.json
  */
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
 import { execSync } from "child_process";
@@ -9,23 +11,62 @@ import path from "path";
 import os from "os";
 import { uploadFileFeishu, sendAudioFeishu, type SendMediaResult } from "./media.js";
 
-// TTS Configuration
-const TTS_CONFIG = {
-  runtime: `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/runtime/bin/sherpa-onnx-offline-tts`,
+// Skill config path
+const SKILL_CONFIG_PATH = `${os.homedir()}/.openclaw/workspace/skills/feishu-voice/skill.json`;
+
+// Default config (fallback if skill.json not found)
+const DEFAULT_CONFIG = {
   models: {
-    zh: {
-      dir: `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/models/vits-zh-hf-fanchen-C`,
-      model: "vits-zh-hf-fanchen-C.onnx",
-      lengthScale: 0.65, // 裴总偏好：较快语速
+    zh: { name: "vits-zh-hf-fanchen-C", lengthScale: 0.65 },
+    "zh-en": { name: "vits-melo-tts-zh_en", lengthScale: 0.8 },
+  },
+  rules: {
+    forceText: {
+      maxChars: 150,
+      codeBlocks: true,
+      tables: true,
+      techKeywords: true,
     },
-    "zh-en": {
-      dir: `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/models/vits-melo-tts-zh_en`,
-      model: "model.onnx",
-      lengthScale: 0.8, // 裴总偏好：中英混合稍慢
+    schedule: {
+      timezone: "Asia/Shanghai",
+      weekday: {
+        "07:00-08:30": "voice",
+        "08:30-12:00": "text",
+        "12:00-13:00": "voice",
+        "13:00-17:30": "text",
+        "17:30-19:00": "voice",
+        "19:00-07:00": "voice",
+      },
+      weekend: "voice",
     },
   },
-  timezone: "Asia/Shanghai",
 };
+
+// TTS paths
+const TTS_RUNTIME = `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/runtime/bin/sherpa-onnx-offline-tts`;
+const TTS_MODELS_DIR = `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/models`;
+
+/**
+ * Load skill configuration
+ */
+function loadConfig(): typeof DEFAULT_CONFIG {
+  try {
+    if (fs.existsSync(SKILL_CONFIG_PATH)) {
+      const raw = fs.readFileSync(SKILL_CONFIG_PATH, "utf-8");
+      const json = JSON.parse(raw);
+      return {
+        models: { ...DEFAULT_CONFIG.models, ...json.config?.models },
+        rules: {
+          forceText: { ...DEFAULT_CONFIG.rules.forceText, ...json.config?.rules?.forceText },
+          schedule: { ...DEFAULT_CONFIG.rules.schedule, ...json.config?.rules?.schedule },
+        },
+      };
+    }
+  } catch (e) {
+    console.error("Failed to load skill config:", e);
+  }
+  return DEFAULT_CONFIG;
+}
 
 /**
  * Check if text contains English words
@@ -35,83 +76,76 @@ function containsEnglish(text: string): boolean {
 }
 
 /**
+ * Parse time string "HH:MM" to minutes since midnight
+ */
+function parseTime(timeStr: string): number {
+  const [h, m] = timeStr.split(":").map(Number);
+  return h * 60 + m;
+}
+
+/**
  * Check if content should use text instead of voice
- * - Code/programming content
- * - Long/complex content (>300 chars)
- * - Content with code blocks, tables, or formatted lists
  */
 export function shouldUseText(text: string): boolean {
+  const config = loadConfig();
+  const rules = config.rules.forceText;
+
   // Code blocks
-  if (/```[\s\S]*```/.test(text)) return true;
+  if (rules.codeBlocks && /```[\s\S]*```/.test(text)) return true;
   // Inline code (multiple occurrences)
-  if ((text.match(/`[^`]+`/g) || []).length > 2) return true;
+  if (rules.codeBlocks && (text.match(/`[^`]+`/g) || []).length > 2) return true;
   // Tables
-  if (/\|.*\|.*\|/.test(text)) return true;
-  // Long content (>150 chars for Chinese, >300 for English)
-  if (text.length > 150) return true;
+  if (rules.tables && /\|.*\|.*\|/.test(text)) return true;
+  // Long content
+  if (text.length > rules.maxChars) return true;
   // Technical keywords
-  const techKeywords = /\b(function|const|let|var|import|export|class|interface|type|async|await|return|if|else|for|while|npm|git|docker|api|http|json|xml|sql|bash|shell|python|javascript|typescript|node|react|vue)\b/i;
-  if (techKeywords.test(text)) return true;
-  
+  if (rules.techKeywords) {
+    const techKeywords = /\b(function|const|let|var|import|export|class|interface|type|async|await|return|if|else|for|while|npm|git|docker|api|http|json|xml|sql|bash|shell|python|javascript|typescript|node|react|vue)\b/i;
+    if (techKeywords.test(text)) return true;
+  }
+
   return false;
 }
 
 /**
- * Check if current time prefers voice based on 裴总's schedule
- * 
- * 工作日 (Mon-Fri):
- * - 07:00-08:30: 通勤（开车去公司）→ 语音
- * - 08:30-12:00: 上班 → 文本
- * - 12:00-13:00: 午休 → 语音
- * - 13:00-17:30: 上班 → 文本
- * - 17:30-19:00: 通勤（开车回家）→ 语音
- * - 19:00-07:00: 下班/休息 → 语音
- * 
- * 周末/节假日: 优先语音
+ * Check if current time prefers voice based on schedule config
  */
 export function shouldUseVoiceByTime(): boolean {
+  const config = loadConfig();
+  const schedule = config.rules.schedule;
+
   const now = new Date();
-  // Convert to Shanghai timezone
-  const shanghaiTime = new Date(now.toLocaleString("en-US", { timeZone: TTS_CONFIG.timezone }));
+  const shanghaiTime = new Date(now.toLocaleString("en-US", { timeZone: schedule.timezone }));
   const day = shanghaiTime.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
   const hour = shanghaiTime.getHours();
   const minute = shanghaiTime.getMinutes();
-  const timeValue = hour * 60 + minute; // Minutes since midnight
+  const currentTime = hour * 60 + minute;
 
-  // Weekend: prefer voice
+  // Weekend
   if (day === 0 || day === 6) {
-    return true;
+    return schedule.weekend === "voice";
   }
 
-  // Weekday time slots (in minutes)
-  const COMMUTE_MORNING_START = 7 * 60;      // 07:00
-  const COMMUTE_MORNING_END = 8 * 60 + 30;   // 08:30
-  const WORK_MORNING_END = 12 * 60;          // 12:00
-  const LUNCH_END = 13 * 60;                 // 13:00
-  const WORK_AFTERNOON_END = 17 * 60 + 30;   // 17:30
-  const COMMUTE_EVENING_END = 19 * 60;       // 19:00
+  // Weekday - check time slots
+  const weekdayRules = schedule.weekday;
+  for (const [timeRange, mode] of Object.entries(weekdayRules)) {
+    const [startStr, endStr] = timeRange.split("-");
+    const start = parseTime(startStr);
+    const end = parseTime(endStr);
 
-  // Morning commute: voice
-  if (timeValue >= COMMUTE_MORNING_START && timeValue < COMMUTE_MORNING_END) {
-    return true;
+    // Handle overnight ranges (e.g., 19:00-07:00)
+    if (start > end) {
+      if (currentTime >= start || currentTime < end) {
+        return mode === "voice";
+      }
+    } else {
+      if (currentTime >= start && currentTime < end) {
+        return mode === "voice";
+      }
+    }
   }
-  // Morning work: text
-  if (timeValue >= COMMUTE_MORNING_END && timeValue < WORK_MORNING_END) {
-    return false;
-  }
-  // Lunch break: voice
-  if (timeValue >= WORK_MORNING_END && timeValue < LUNCH_END) {
-    return true;
-  }
-  // Afternoon work: text
-  if (timeValue >= LUNCH_END && timeValue < WORK_AFTERNOON_END) {
-    return false;
-  }
-  // Evening commute: voice
-  if (timeValue >= WORK_AFTERNOON_END && timeValue < COMMUTE_EVENING_END) {
-    return true;
-  }
-  // Night/early morning: voice
+
+  // Default to voice if no rule matches
   return true;
 }
 
@@ -131,9 +165,18 @@ export function shouldSendAsVoice(text: string): boolean {
  * Generate TTS audio file from text
  */
 export async function generateTTS(text: string): Promise<{ wavPath: string; opusPath: string; durationMs: number }> {
+  const config = loadConfig();
   const useZhEn = containsEnglish(text);
-  const modelConfig = useZhEn ? TTS_CONFIG.models["zh-en"] : TTS_CONFIG.models.zh;
-  
+  const modelConfig = useZhEn ? config.models["zh-en"] : config.models.zh;
+  const modelDir = `${TTS_MODELS_DIR}/${modelConfig.name}`;
+
+  // Find model file
+  let modelFile = `${modelConfig.name}.onnx`;
+  if (!fs.existsSync(`${modelDir}/${modelFile}`)) {
+    // Try model.onnx for melo models
+    modelFile = "model.onnx";
+  }
+
   const tmpDir = os.tmpdir();
   const timestamp = Date.now();
   const wavPath = path.join(tmpDir, `tts_${timestamp}.wav`);
@@ -141,10 +184,10 @@ export async function generateTTS(text: string): Promise<{ wavPath: string; opus
 
   // Generate WAV using sherpa-onnx
   const ttsCmd = [
-    TTS_CONFIG.runtime,
-    `--vits-model=${modelConfig.dir}/${modelConfig.model}`,
-    `--vits-lexicon=${modelConfig.dir}/lexicon.txt`,
-    `--vits-tokens=${modelConfig.dir}/tokens.txt`,
+    TTS_RUNTIME,
+    `--vits-model=${modelDir}/${modelFile}`,
+    `--vits-lexicon=${modelDir}/lexicon.txt`,
+    `--vits-tokens=${modelDir}/tokens.txt`,
     `--vits-length-scale=${modelConfig.lengthScale}`,
     `--output-filename=${wavPath}`,
     `"${text.replace(/"/g, '\\"')}"`,
@@ -212,13 +255,23 @@ export async function sendVoiceMessage(params: {
  * Check if TTS is available (runtime and models exist)
  */
 export function isTTSAvailable(): boolean {
+  const config = loadConfig();
   try {
+    const zhModelDir = `${TTS_MODELS_DIR}/${config.models.zh.name}`;
+    const zhEnModelDir = `${TTS_MODELS_DIR}/${config.models["zh-en"].name}`;
     return (
-      fs.existsSync(TTS_CONFIG.runtime) &&
-      fs.existsSync(TTS_CONFIG.models.zh.dir) &&
-      fs.existsSync(TTS_CONFIG.models["zh-en"].dir)
+      fs.existsSync(TTS_RUNTIME) &&
+      fs.existsSync(zhModelDir) &&
+      fs.existsSync(zhEnModelDir)
     );
   } catch {
     return false;
   }
+}
+
+/**
+ * Get current config (for debugging)
+ */
+export function getConfig() {
+  return loadConfig();
 }
