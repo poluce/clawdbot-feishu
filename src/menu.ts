@@ -10,6 +10,20 @@ import type { FeishuConfig } from "./types.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu } from "./send.js";
 
+// Deduplication: track processed event IDs to prevent duplicate handling
+const processedEventIds = new Set<string>();
+const EVENT_ID_TTL_MS = 60 * 1000; // Keep event IDs for 1 minute
+
+function markEventProcessed(eventId: string): boolean {
+  if (processedEventIds.has(eventId)) {
+    return false; // Already processed
+  }
+  processedEventIds.add(eventId);
+  // Clean up after TTL
+  setTimeout(() => processedEventIds.delete(eventId), EVENT_ID_TTL_MS);
+  return true; // First time seeing this event
+}
+
 export type FeishuMenuEvent = {
   event_id?: string;
   token?: string;
@@ -39,92 +53,305 @@ export type MenuHandler = (params: {
   runtime?: RuntimeEnv;
 }) => Promise<void>;
 
+/**
+ * Get session status by parsing `openclaw status --json` output
+ */
+async function getSessionStatus(params: {
+  operatorOpenId: string;
+  cfg: ClawdbotConfig;
+}): Promise<{
+  model?: string;
+  totalTokens?: number;
+  contextTokens?: number;
+  percentUsed?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  compactions?: number;
+} | null> {
+  const core = getFeishuRuntime();
+
+  // Resolve the session key for this user
+  const route = core.channel.routing.resolveAgentRoute({
+    cfg: params.cfg,
+    channel: "feishu",
+    peer: { kind: "dm", id: params.operatorOpenId },
+  });
+
+  const sessionKey = route.sessionKey;
+
+  try {
+    // Run openclaw status --json
+    const result = await core.system.runCommandWithTimeout(
+      ["openclaw", "status", "--json"],
+      { timeoutMs: 5000 }
+    );
+
+    if (result.code !== 0) {
+      return null;
+    }
+
+    // Parse JSON from stdout (skip any non-JSON lines like plugin logs)
+    const lines = (result.stdout || "").split("\n");
+    let jsonStr = "";
+    let inJson = false;
+
+    for (const line of lines) {
+      if (line.startsWith("{")) {
+        inJson = true;
+      }
+      if (inJson) {
+        jsonStr += line + "\n";
+      }
+    }
+
+    if (!jsonStr) {
+      return null;
+    }
+
+    const status = JSON.parse(jsonStr);
+
+    // Find the session in recent sessions
+    const sessions = status.sessions?.recent ?? [];
+    const session = sessions.find((s: { key?: string }) => s.key === sessionKey);
+
+    if (!session) {
+      // Return defaults if session not found
+      return {
+        model: status.sessions?.defaults?.model,
+        contextTokens: status.sessions?.defaults?.contextTokens,
+      };
+    }
+
+    return {
+      model: session.model,
+      totalTokens: session.totalTokens,
+      contextTokens: session.contextTokens,
+      percentUsed: session.percentUsed,
+      inputTokens: session.inputTokens,
+      outputTokens: session.outputTokens,
+      compactions: session.compactions,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Built-in menu handlers
 const builtinHandlers: Record<string, MenuHandler> = {
-  // Status command - show session status
+  /**
+   * /status - Show session status (instant response)
+   */
   status: async ({ cfg, operatorOpenId, runtime }) => {
     const log = runtime?.log ?? console.log;
-    log(`feishu: menu handler 'status' triggered by ${operatorOpenId}`);
 
-    const core = getFeishuRuntime();
+    try {
+      const status = await getSessionStatus({ operatorOpenId, cfg });
 
-    // Route to agent as a /status command
-    const route = core.channel.routing.resolveAgentRoute({
-      cfg,
-      channel: "feishu",
-      peer: { kind: "dm", id: operatorOpenId },
-    });
+      if (!status) {
+        await sendMessageFeishu({
+          cfg,
+          to: operatorOpenId,
+          text: "❌ 获取状态失败",
+        });
+        return;
+      }
 
-    core.system.enqueueSystemEvent(`Feishu menu command: /status`, {
-      sessionKey: route.sessionKey,
-      contextKey: `feishu:menu:status:${Date.now()}`,
-    });
+      // Format status message (plain text for Feishu)
+      const lines: string[] = ["📊 会话状态"];
 
-    const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-    const body = core.channel.reply.formatAgentEnvelope({
-      channel: "Feishu",
-      from: operatorOpenId,
-      timestamp: new Date(),
-      envelope: envelopeOptions,
-      body: "/status",
-    });
+      if (status.model) {
+        lines.push(`• 模型: ${status.model}`);
+      }
 
-    const ctxPayload = core.channel.reply.finalizeInboundContext({
-      Body: body,
-      RawBody: "/status",
-      CommandBody: "/status",
-      From: `feishu:${operatorOpenId}`,
-      To: `user:${operatorOpenId}`,
-      SessionKey: route.sessionKey,
-      AccountId: route.accountId,
-      ChatType: "direct",
-      SenderName: operatorOpenId,
-      SenderId: operatorOpenId,
-      Provider: "feishu" as const,
-      Surface: "feishu" as const,
-      MessageSid: `menu:status:${Date.now()}`,
-      Timestamp: Date.now(),
-      WasMentioned: false,
-      CommandAuthorized: true,
-      OriginatingChannel: "feishu" as const,
-      OriginatingTo: `user:${operatorOpenId}`,
-    });
+      if (status.totalTokens !== undefined && status.contextTokens !== undefined) {
+        const pct = status.percentUsed ?? Math.round((status.totalTokens / status.contextTokens) * 100);
+        const usedK = Math.round(status.totalTokens / 1000);
+        const limitK = Math.round(status.contextTokens / 1000);
+        lines.push(`• 上下文: ${usedK}k / ${limitK}k (${pct}%)`);
+      }
 
-    const { createFeishuReplyDispatcher } = await import("./reply-dispatcher.js");
-    const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
-      cfg,
-      agentId: route.agentId,
-      runtime: runtime as RuntimeEnv,
-      chatId: operatorOpenId,
-    });
+      if (status.compactions !== undefined && status.compactions > 0) {
+        lines.push(`• 已压缩: ${status.compactions} 次`);
+      }
 
-    await core.channel.reply.dispatchReplyFromConfig({
-      ctx: ctxPayload,
-      cfg,
-      dispatcher,
-      replyOptions,
-    });
+      if (status.inputTokens !== undefined || status.outputTokens !== undefined) {
+        const inK = status.inputTokens ? Math.round(status.inputTokens / 1000) : 0;
+        const outK = status.outputTokens ? Math.round(status.outputTokens / 1000) : 0;
+        lines.push(`• Token: ${inK}k 输入 / ${outK}k 输出`);
+      }
 
-    markDispatchIdle();
+      const message = lines.join("\n");
+
+      await sendMessageFeishu({
+        cfg,
+        to: operatorOpenId,
+        text: message,
+      });
+
+      log(`feishu: /status responded to ${operatorOpenId}`);
+    } catch (err) {
+      log(`feishu: /status failed: ${String(err)}`);
+      await sendMessageFeishu({
+        cfg,
+        to: operatorOpenId,
+        text: "❌ 获取状态失败，请稍后重试",
+      });
+    }
   },
 
-  // Help command - show available commands
+  /**
+   * /help - Show available commands (instant response)
+   */
   help: async ({ cfg, operatorOpenId, runtime }) => {
     const log = runtime?.log ?? console.log;
-    log(`feishu: menu handler 'help' triggered by ${operatorOpenId}`);
 
-    const helpText = `🤖 可用命令：
-
-/status - 查看会话状态
-/help - 显示帮助信息
-
-💡 提示：直接发消息即可与我对话`;
+    const message = [
+      "📖 可用命令",
+      "",
+      "• /status - 查看会话状态",
+      "• /usage - 查看 Token 用量",
+      "• /model - 查看当前模型",
+      "• /clear - 清空会话历史",
+      "• /help - 显示此帮助",
+      "",
+      "直接发消息即可与我对话～",
+    ].join("\n");
 
     await sendMessageFeishu({
       cfg,
       to: operatorOpenId,
-      text: helpText,
+      text: message,
     });
+
+    log(`feishu: /help responded to ${operatorOpenId}`);
+  },
+
+  /**
+   * /usage - Show token usage (instant response)
+   */
+  usage: async ({ cfg, operatorOpenId, runtime }) => {
+    const log = runtime?.log ?? console.log;
+
+    try {
+      const status = await getSessionStatus({ operatorOpenId, cfg });
+
+      if (!status) {
+        await sendMessageFeishu({
+          cfg,
+          to: operatorOpenId,
+          text: "❌ 获取用量失败",
+        });
+        return;
+      }
+
+      const lines: string[] = ["📈 Token 用量"];
+
+      if (status.totalTokens !== undefined && status.contextTokens !== undefined) {
+        const pct = status.percentUsed ?? Math.round((status.totalTokens / status.contextTokens) * 100);
+        const usedK = Math.round(status.totalTokens / 1000);
+        const limitK = Math.round(status.contextTokens / 1000);
+        lines.push(`• 上下文: ${usedK}k / ${limitK}k (${pct}%)`);
+      }
+
+      if (status.inputTokens !== undefined || status.outputTokens !== undefined) {
+        const inK = status.inputTokens ? Math.round(status.inputTokens / 1000) : 0;
+        const outK = status.outputTokens ? Math.round(status.outputTokens / 1000) : 0;
+        lines.push(`• 输入: ${inK}k tokens`);
+        lines.push(`• 输出: ${outK}k tokens`);
+      }
+
+      if (status.compactions !== undefined && status.compactions > 0) {
+        lines.push(`• 已压缩: ${status.compactions} 次`);
+      }
+
+      const message = lines.join("\n");
+
+      await sendMessageFeishu({
+        cfg,
+        to: operatorOpenId,
+        text: message,
+      });
+
+      log(`feishu: /usage responded to ${operatorOpenId}`);
+    } catch (err) {
+      log(`feishu: /usage failed: ${String(err)}`);
+      await sendMessageFeishu({
+        cfg,
+        to: operatorOpenId,
+        text: "❌ 获取用量失败，请稍后重试",
+      });
+    }
+  },
+
+  /**
+   * /model - Show current model (instant response)
+   */
+  model: async ({ cfg, operatorOpenId, runtime }) => {
+    const log = runtime?.log ?? console.log;
+
+    try {
+      const status = await getSessionStatus({ operatorOpenId, cfg });
+
+      if (!status) {
+        await sendMessageFeishu({
+          cfg,
+          to: operatorOpenId,
+          text: "❌ 获取模型信息失败",
+        });
+        return;
+      }
+
+      const lines: string[] = ["🤖 当前模型"];
+
+      if (status.model) {
+        lines.push(`• ${status.model}`);
+      } else {
+        lines.push("• 未知");
+      }
+
+      lines.push("");
+      lines.push("切换模型请发送: /model <模型名>");
+
+      const message = lines.join("\n");
+
+      await sendMessageFeishu({
+        cfg,
+        to: operatorOpenId,
+        text: message,
+      });
+
+      log(`feishu: /model responded to ${operatorOpenId}`);
+    } catch (err) {
+      log(`feishu: /model failed: ${String(err)}`);
+      await sendMessageFeishu({
+        cfg,
+        to: operatorOpenId,
+        text: "❌ 获取模型信息失败，请稍后重试",
+      });
+    }
+  },
+
+  /**
+   * /clear - Clear session history (instant response)
+   */
+  clear: async ({ cfg, operatorOpenId, runtime }) => {
+    const log = runtime?.log ?? console.log;
+
+    const message = [
+      "🗑️ 清空会话",
+      "",
+      "请发送 /reset 或 /new 来清空对话历史并开始新会话。",
+      "",
+      "注意: 清空后无法恢复之前的对话内容。",
+    ].join("\n");
+
+    await sendMessageFeishu({
+      cfg,
+      to: operatorOpenId,
+      text: message,
+    });
+
+    log(`feishu: /clear responded to ${operatorOpenId}`);
   },
 };
 
@@ -170,7 +397,14 @@ export async function handleFeishuMenuEvent(params: {
     return;
   }
 
-  log(`feishu: menu event received - key=${eventKey}, operator=${operatorOpenId}`);
+  // Deduplicate: check if we've already processed this event
+  const eventId = event.event_id || event.uuid || `${eventKey}:${operatorOpenId}:${event.timestamp}`;
+  if (!markEventProcessed(eventId)) {
+    log(`feishu: menu event ${eventId} already processed, skipping`);
+    return;
+  }
+
+  log(`feishu: menu event received - key=${eventKey}, operator=${operatorOpenId}, eventId=${eventId}`);
 
   // Check custom handlers first
   const customHandler = customHandlers.get(eventKey);
@@ -196,8 +430,8 @@ export async function handleFeishuMenuEvent(params: {
     }
   }
 
-  // No handler found - dispatch as generic command to agent
-  log(`feishu: no handler for menu key '${eventKey}', dispatching to agent`);
+  // No handler found - enqueue system event for agent to handle
+  log(`feishu: no handler for menu key '${eventKey}', sending to agent via system event`);
 
   try {
     const core = getFeishuRuntime();
@@ -210,58 +444,12 @@ export async function handleFeishuMenuEvent(params: {
 
     const commandText = `/${eventKey}`;
 
+    // Just enqueue a system event - the agent will handle it and reply
     core.system.enqueueSystemEvent(`Feishu menu command: ${commandText}`, {
       sessionKey: route.sessionKey,
       contextKey: `feishu:menu:${eventKey}:${Date.now()}`,
     });
-
-    const envelopeOptions = core.channel.reply.resolveEnvelopeFormatOptions(cfg);
-    const body = core.channel.reply.formatAgentEnvelope({
-      channel: "Feishu",
-      from: operatorOpenId,
-      timestamp: new Date(),
-      envelope: envelopeOptions,
-      body: commandText,
-    });
-
-    const ctxPayload = core.channel.reply.finalizeInboundContext({
-      Body: body,
-      RawBody: commandText,
-      CommandBody: commandText,
-      From: `feishu:${operatorOpenId}`,
-      To: `user:${operatorOpenId}`,
-      SessionKey: route.sessionKey,
-      AccountId: route.accountId,
-      ChatType: "direct",
-      SenderName: event.operator?.operator_name ?? operatorOpenId,
-      SenderId: operatorOpenId,
-      Provider: "feishu" as const,
-      Surface: "feishu" as const,
-      MessageSid: `menu:${eventKey}:${Date.now()}`,
-      Timestamp: Date.now(),
-      WasMentioned: false,
-      CommandAuthorized: true,
-      OriginatingChannel: "feishu" as const,
-      OriginatingTo: `user:${operatorOpenId}`,
-    });
-
-    const { createFeishuReplyDispatcher } = await import("./reply-dispatcher.js");
-    const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
-      cfg,
-      agentId: route.agentId,
-      runtime: runtime as RuntimeEnv,
-      chatId: operatorOpenId,
-    });
-
-    await core.channel.reply.dispatchReplyFromConfig({
-      ctx: ctxPayload,
-      cfg,
-      dispatcher,
-      replyOptions,
-    });
-
-    markDispatchIdle();
   } catch (err) {
-    error(`feishu: failed to dispatch menu event to agent: ${String(err)}`);
+    error(`feishu: failed to send menu event to agent: ${String(err)}`);
   }
 }
