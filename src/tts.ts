@@ -301,19 +301,36 @@ function getLearnedPreference(): "voice" | "text" | null {
 }
 
 /**
+ * Weight configuration for scoring
+ */
+const WEIGHTS = {
+  contextKeyword: 0.6,      // 情境关键词（开车、到公司）— 最强信号
+  userInputMode: 0.3,       // 用户输入方式（发语音/打字）
+  schedule: 0.2,            // 时间表
+  longInterval: 0.15,       // 间隔较长
+  learned: 0.25,            // 学习记录
+};
+
+/**
  * Main decision function: should we send as voice?
  * 
- * Priority:
- * 1. Content check (code/long → always text)
- * 2. Explicit temporary mode (user said "用语音")
- * 3. Context keywords in recent message ("开车了" → voice)
- * 4. Follow user's input mode (they sent voice → reply voice)
- * 5. Long interval since last interaction → voice (probably mobile)
- * 6. Learned patterns from corrections
- * 7. Schedule-based rules (fallback)
+ * 混合方案：硬规则 + 软权重
+ * 
+ * 硬规则（一票否决）：
+ * - 代码/长内容 → 强制文本
+ * - 临时模式 → 强制该模式
+ * 
+ * 软权重（多信号叠加）：
+ * - 情境关键词 → ±0.5
+ * - 用户输入方式 → ±0.35
+ * - 时间表 → ±0.25
+ * - 间隔长短 → ±0.15
+ * - 学习记录 → ±0.3
+ * 
+ * 得分 > 0 → 语音
  */
 export function shouldSendAsVoice(responseText: string, userMessage?: string): boolean {
-  // 1. Content check - code/long content always text
+  // 硬规则1: 代码/长内容 → 强制文本
   if (mustUseText(responseText)) {
     return false;
   }
@@ -321,9 +338,8 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   const state = loadState();
   const config = loadConfig();
 
-  // 2. Check temporary mode
+  // 硬规则2: 临时模式 → 强制该模式
   if (state.currentMode !== "auto") {
-    // Check if expired
     if (state.modeExpiresAt && Date.now() > state.modeExpiresAt) {
       setTemporaryMode("auto");
     } else {
@@ -331,35 +347,71 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     }
   }
 
-  // 3. Context keywords in user message
+  // 软权重计算
+  let score = 0;
+  const factors: string[] = [];
+
+  // 1. 情境关键词
   if (userMessage) {
     const contextMode = detectContextFromMessage(userMessage);
-    if (contextMode) {
-      return contextMode === "voice";
+    if (contextMode === "voice") {
+      score += WEIGHTS.contextKeyword;
+      factors.push(`情境关键词:+${WEIGHTS.contextKeyword}`);
+    } else if (contextMode === "text") {
+      score -= WEIGHTS.contextKeyword;
+      factors.push(`情境关键词:-${WEIGHTS.contextKeyword}`);
     }
   }
 
-  // 4. Follow user's input mode
+  // 2. 用户输入方式
   if (config.rules.adaptiveRules.followUserInputMode && state.lastUserInputMode) {
-    return state.lastUserInputMode === "voice";
+    if (state.lastUserInputMode === "voice") {
+      score += WEIGHTS.userInputMode;
+      factors.push(`用户输入:+${WEIGHTS.userInputMode}`);
+    } else {
+      score -= WEIGHTS.userInputMode;
+      factors.push(`用户输入:-${WEIGHTS.userInputMode}`);
+    }
   }
 
-  // 5. Long interval → probably on the go
+  // 3. 时间表
+  const schedulePreference = getSchedulePreference();
+  if (schedulePreference === "voice") {
+    score += WEIGHTS.schedule;
+    factors.push(`时间表:+${WEIGHTS.schedule}`);
+  } else {
+    score -= WEIGHTS.schedule;
+    factors.push(`时间表:-${WEIGHTS.schedule}`);
+  }
+
+  // 4. 间隔长短
   if (state.lastInteractionAt) {
     const interval = Date.now() - state.lastInteractionAt;
     if (interval > config.rules.adaptiveRules.longIntervalThresholdMs) {
-      return config.rules.adaptiveRules.longIntervalPreference === "voice";
+      if (config.rules.adaptiveRules.longIntervalPreference === "voice") {
+        score += WEIGHTS.longInterval;
+        factors.push(`长间隔:+${WEIGHTS.longInterval}`);
+      } else {
+        score -= WEIGHTS.longInterval;
+        factors.push(`长间隔:-${WEIGHTS.longInterval}`);
+      }
     }
   }
 
-  // 6. Learned patterns
+  // 5. 学习记录
   const learned = getLearnedPreference();
-  if (learned) {
-    return learned === "voice";
+  if (learned === "voice") {
+    score += WEIGHTS.learned;
+    factors.push(`学习记录:+${WEIGHTS.learned}`);
+  } else if (learned === "text") {
+    score -= WEIGHTS.learned;
+    factors.push(`学习记录:-${WEIGHTS.learned}`);
   }
 
-  // 7. Schedule-based fallback
-  return getSchedulePreference() === "voice";
+  // 保存计算过程用于调试
+  (globalThis as any).__lastVoiceScore = { score, factors };
+
+  return score > 0;
 }
 
 /**
@@ -367,43 +419,24 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
  */
 export function explainDecision(responseText: string, userMessage?: string): string {
   if (mustUseText(responseText)) {
-    return "内容包含代码/过长，使用文本";
+    return "【硬规则】内容包含代码/过长，强制文本";
   }
 
   const state = loadState();
-  const config = loadConfig();
 
   if (state.currentMode !== "auto") {
     if (state.modeExpiresAt && Date.now() > state.modeExpiresAt) {
       return "临时模式已过期，恢复自动";
     }
-    return `临时模式：${state.currentMode}`;
+    return `【硬规则】临时模式：${state.currentMode}`;
   }
 
-  if (userMessage) {
-    const contextMode = detectContextFromMessage(userMessage);
-    if (contextMode) {
-      return `从消息检测到情境：${contextMode}`;
-    }
-  }
-
-  if (config.rules.adaptiveRules.followUserInputMode && state.lastUserInputMode) {
-    return `跟随用户输入方式：${state.lastUserInputMode}`;
-  }
-
-  if (state.lastInteractionAt) {
-    const interval = Date.now() - state.lastInteractionAt;
-    if (interval > config.rules.adaptiveRules.longIntervalThresholdMs) {
-      return `间隔较长(${Math.round(interval/60000)}分钟)，可能在移动中`;
-    }
-  }
-
-  const learned = getLearnedPreference();
-  if (learned) {
-    return `从历史纠正中学习：${learned}`;
-  }
-
-  return `按时间表：${getSchedulePreference()}`;
+  // 触发一次计算
+  const result = shouldSendAsVoice(responseText, userMessage);
+  const scoreInfo = (globalThis as any).__lastVoiceScore || { score: 0, factors: [] };
+  
+  const factorStr = scoreInfo.factors.length > 0 ? scoreInfo.factors.join(", ") : "无信号";
+  return `【权重计算】${factorStr} → 总分=${scoreInfo.score.toFixed(2)} → ${result ? "语音" : "文本"}`;
 }
 
 /**
