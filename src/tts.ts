@@ -301,15 +301,31 @@ function getLearnedPreference(): "voice" | "text" | null {
 }
 
 /**
- * Weight configuration for scoring
+ * Weight configuration for scoring (loaded from config)
  */
-const WEIGHTS = {
+const DEFAULT_WEIGHTS = {
   contextKeyword: 0.6,      // 情境关键词（开车、到公司）— 最强信号
   userInputMode: 0.3,       // 用户输入方式（发语音/打字）
   schedule: 0.2,            // 时间表
   longInterval: 0.15,       // 间隔较长
   learned: 0.25,            // 学习记录
 };
+
+/**
+ * Load weights from config
+ */
+function loadWeights(): typeof DEFAULT_WEIGHTS {
+  try {
+    if (fs.existsSync(SKILL_CONFIG_PATH)) {
+      const raw = fs.readFileSync(SKILL_CONFIG_PATH, "utf-8");
+      const json = JSON.parse(raw);
+      return { ...DEFAULT_WEIGHTS, ...json.config?.weights };
+    }
+  } catch (e) {
+    console.error("Failed to load weights:", e);
+  }
+  return DEFAULT_WEIGHTS;
+}
 
 /**
  * Main decision function: should we send as voice?
@@ -355,33 +371,33 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   if (userMessage) {
     const contextMode = detectContextFromMessage(userMessage);
     if (contextMode === "voice") {
-      score += WEIGHTS.contextKeyword;
-      factors.push(`情境关键词:+${WEIGHTS.contextKeyword}`);
+      score += loadWeights().contextKeyword;
+      factors.push(`情境关键词:+${loadWeights().contextKeyword}`);
     } else if (contextMode === "text") {
-      score -= WEIGHTS.contextKeyword;
-      factors.push(`情境关键词:-${WEIGHTS.contextKeyword}`);
+      score -= loadWeights().contextKeyword;
+      factors.push(`情境关键词:-${loadWeights().contextKeyword}`);
     }
   }
 
   // 2. 用户输入方式
   if (config.rules.adaptiveRules.followUserInputMode && state.lastUserInputMode) {
     if (state.lastUserInputMode === "voice") {
-      score += WEIGHTS.userInputMode;
-      factors.push(`用户输入:+${WEIGHTS.userInputMode}`);
+      score += loadWeights().userInputMode;
+      factors.push(`用户输入:+${loadWeights().userInputMode}`);
     } else {
-      score -= WEIGHTS.userInputMode;
-      factors.push(`用户输入:-${WEIGHTS.userInputMode}`);
+      score -= loadWeights().userInputMode;
+      factors.push(`用户输入:-${loadWeights().userInputMode}`);
     }
   }
 
   // 3. 时间表
   const schedulePreference = getSchedulePreference();
   if (schedulePreference === "voice") {
-    score += WEIGHTS.schedule;
-    factors.push(`时间表:+${WEIGHTS.schedule}`);
+    score += loadWeights().schedule;
+    factors.push(`时间表:+${loadWeights().schedule}`);
   } else {
-    score -= WEIGHTS.schedule;
-    factors.push(`时间表:-${WEIGHTS.schedule}`);
+    score -= loadWeights().schedule;
+    factors.push(`时间表:-${loadWeights().schedule}`);
   }
 
   // 4. 间隔长短
@@ -389,11 +405,11 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     const interval = Date.now() - state.lastInteractionAt;
     if (interval > config.rules.adaptiveRules.longIntervalThresholdMs) {
       if (config.rules.adaptiveRules.longIntervalPreference === "voice") {
-        score += WEIGHTS.longInterval;
-        factors.push(`长间隔:+${WEIGHTS.longInterval}`);
+        score += loadWeights().longInterval;
+        factors.push(`长间隔:+${loadWeights().longInterval}`);
       } else {
-        score -= WEIGHTS.longInterval;
-        factors.push(`长间隔:-${WEIGHTS.longInterval}`);
+        score -= loadWeights().longInterval;
+        factors.push(`长间隔:-${loadWeights().longInterval}`);
       }
     }
   }
@@ -401,11 +417,11 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   // 5. 学习记录
   const learned = getLearnedPreference();
   if (learned === "voice") {
-    score += WEIGHTS.learned;
-    factors.push(`学习记录:+${WEIGHTS.learned}`);
+    score += loadWeights().learned;
+    factors.push(`学习记录:+${loadWeights().learned}`);
   } else if (learned === "text") {
-    score -= WEIGHTS.learned;
-    factors.push(`学习记录:-${WEIGHTS.learned}`);
+    score -= loadWeights().learned;
+    factors.push(`学习记录:-${loadWeights().learned}`);
   }
 
   // 保存计算过程用于调试
