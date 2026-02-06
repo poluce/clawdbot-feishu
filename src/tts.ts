@@ -456,43 +456,29 @@ export function explainDecision(responseText: string, userMessage?: string): str
 }
 
 /**
- * Generate TTS audio file from text
+ * Generate TTS audio file from text using Edge TTS
  */
 export async function generateTTS(text: string): Promise<{ opusPath: string; durationMs: number }> {
-  const config = loadConfig();
-  const useZhEn = containsEnglish(text);
-  const modelConfig = useZhEn ? config.models["zh-en"] : config.models.zh;
-  const modelDir = `${TTS_MODELS_DIR}/${modelConfig.name}`;
-
-  let modelFile = `${modelConfig.name}.onnx`;
-  if (!fs.existsSync(`${modelDir}/${modelFile}`)) {
-    modelFile = "model.onnx";
-  }
-
   const tmpDir = os.tmpdir();
   const timestamp = Date.now();
-  const wavPath = path.join(tmpDir, `tts_${timestamp}.wav`);
+  const mp3Path = path.join(tmpDir, `tts_${timestamp}.mp3`);
   const opusPath = path.join(tmpDir, `tts_${timestamp}.opus`);
 
-  const ttsCmd = [
-    TTS_RUNTIME,
-    `--vits-model=${modelDir}/${modelFile}`,
-    `--vits-lexicon=${modelDir}/lexicon.txt`,
-    `--vits-tokens=${modelDir}/tokens.txt`,
-    `--vits-length-scale=${modelConfig.lengthScale}`,
-    `--output-filename=${wavPath}`,
-    `"${text.replace(/"/g, '\\"')}"`,
-  ].join(" ");
-
-  execSync(ttsCmd, { stdio: "pipe" });
-  execSync(`ffmpeg -y -i "${wavPath}" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`, { stdio: "pipe" });
+  // Use Edge TTS with Chinese voice (XiaoxiaoNeural is natural and supports mixed Chinese/English)
+  const voice = "zh-CN-XiaoxiaoNeural";
+  const edgeCmd = `edge-tts --text "${text.replace(/"/g, '\\"')}" --voice ${voice} --write-media "${mp3Path}"`;
+  
+  execSync(edgeCmd, { stdio: "pipe" });
+  
+  // Convert to opus with volume boost (+12dB)
+  execSync(`ffmpeg -y -i "${mp3Path}" -af "volume=12dB" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`, { stdio: "pipe" });
 
   const durationStr = execSync(
     `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${opusPath}"`,
   ).toString().trim();
   const durationMs = Math.round(parseFloat(durationStr) * 1000);
 
-  fs.unlinkSync(wavPath);
+  fs.unlinkSync(mp3Path);
   return { opusPath, durationMs };
 }
 
