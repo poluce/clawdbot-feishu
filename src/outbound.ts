@@ -2,6 +2,7 @@ import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu } from "./send.js";
 import { sendMediaFeishu } from "./media.js";
+import { isTTSAvailable, shouldSendAsVoice, sendVoiceMessage } from "./tts.js";
 
 export const feishuOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
@@ -9,6 +10,16 @@ export const feishuOutbound: ChannelOutboundAdapter = {
   chunkerMode: "markdown",
   textChunkLimit: 4000,
   sendText: async ({ cfg, to, text }) => {
+    // Check if should send as voice
+    if (isTTSAvailable() && shouldSendAsVoice(text)) {
+      try {
+        const result = await sendVoiceMessage({ cfg, to, text });
+        return { channel: "feishu", ...result };
+      } catch (err) {
+        console.error(`[feishu] sendVoiceMessage failed, falling back to text:`, err);
+        // Fall through to text mode
+      }
+    }
     const result = await sendMessageFeishu({ cfg, to, text });
     return { channel: "feishu", ...result };
   },
