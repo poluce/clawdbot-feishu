@@ -418,14 +418,15 @@ export async function sendAudioFeishu(params: {
   to: string;
   fileKey: string;
   replyToMessageId?: string;
+  accountId?: string;
 }): Promise<SendMediaResult> {
-  const { cfg, to, fileKey, replyToMessageId } = params;
-  const feishuCfg = cfg.channels?.feishu as FeishuConfig | undefined;
-  if (!feishuCfg) {
-    throw new Error("Feishu channel not configured");
+  const { cfg, to, fileKey, replyToMessageId, accountId } = params;
+  const account = resolveFeishuAccount({ cfg, accountId });
+  if (!account.configured) {
+    throw new Error(`Feishu account "${account.accountId}" not configured`);
   }
 
-  const client = createFeishuClient(feishuCfg);
+  const client = createFeishuClient(account);
   const receiveId = normalizeFeishuTarget(to);
   if (!receiveId) {
     throw new Error(`Invalid Feishu target: ${to}`);

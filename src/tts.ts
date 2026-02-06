@@ -490,8 +490,9 @@ export async function sendVoiceMessage(params: {
   to: string;
   text: string;
   replyToMessageId?: string;
+  accountId?: string;
 }): Promise<SendMediaResult> {
-  const { cfg, to, text, replyToMessageId } = params;
+  const { cfg, to, text, replyToMessageId, accountId } = params;
   const { opusPath, durationMs } = await generateTTS(text);
 
   try {
@@ -501,9 +502,10 @@ export async function sendVoiceMessage(params: {
       fileName: "voice.opus",
       fileType: "opus",
       duration: durationMs,
+      accountId,
     });
 
-    return await sendAudioFeishu({ cfg, to, fileKey, replyToMessageId });
+    return await sendAudioFeishu({ cfg, to, fileKey, replyToMessageId, accountId });
   } finally {
     if (fs.existsSync(opusPath)) {
       fs.unlinkSync(opusPath);
