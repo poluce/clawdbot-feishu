@@ -795,6 +795,9 @@ export async function handleFeishuMessage(params: {
       ...mediaPayload,
     });
 
+    // Debug: 检查命令相关字段
+    log(`feishu: command debug - RawBody="${ctx.content}", CommandBody="${ctxPayload.CommandBody}", BodyForCommands="${ctxPayload.BodyForCommands}"`);
+
     const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
       cfg,
       agentId: route.agentId,
