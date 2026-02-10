@@ -551,7 +551,7 @@ export async function handleFeishuMessage(params: {
 
   // Skip menu command messages - they are handled by menu.ts via application.bot.menu_v6 event
   // Menu commands look like "/help", "/status", etc.
-  if (!isGroup && ctx.content.match(/^\/[a-zA-Z]+$/)) {
+  if (!isGroup && ctx.content.match(/^\/[a-zA-Z_][a-zA-Z0-9_]*$/)) {
     log(`feishu: skipping menu command message '${ctx.content}', handled by menu event`);
     return;
   }
@@ -889,9 +889,6 @@ export async function handleFeishuMessage(params: {
       OriginatingTo: feishuTo,
       ...mediaPayload,
     });
-
-    // Debug: 检查命令相关字段
-    log(`feishu: command debug - RawBody="${ctx.content}", CommandBody="${ctxPayload.CommandBody}", BodyForCommands="${ctxPayload.BodyForCommands}"`);
 
     const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
       cfg,

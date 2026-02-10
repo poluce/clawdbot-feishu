@@ -99,9 +99,10 @@ function registerEventHandlers(
           cfg,
           event,
           runtime,
+          accountId,
         });
       } catch (err) {
-        error(`feishu: error handling menu event: ${String(err)}`);
+        error(`feishu[${accountId}]: error handling menu event: ${String(err)}`);
       }
     },
   });

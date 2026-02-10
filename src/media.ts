@@ -419,8 +419,10 @@ export async function sendAudioFeishu(params: {
   fileKey: string;
   replyToMessageId?: string;
   accountId?: string;
+  /** Audio duration in milliseconds */
+  durationMs?: number;
 }): Promise<SendMediaResult> {
-  const { cfg, to, fileKey, replyToMessageId, accountId } = params;
+  const { cfg, to, fileKey, replyToMessageId, accountId, durationMs } = params;
   const account = resolveFeishuAccount({ cfg, accountId });
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
@@ -433,7 +435,11 @@ export async function sendAudioFeishu(params: {
   }
 
   const receiveIdType = resolveReceiveIdType(receiveId);
-  const content = JSON.stringify({ file_key: fileKey });
+  const contentObj: Record<string, unknown> = { file_key: fileKey };
+  if (durationMs !== undefined) {
+    contentObj.duration = durationMs;
+  }
+  const content = JSON.stringify(contentObj);
 
   if (replyToMessageId) {
     const response = await client.im.message.reply({

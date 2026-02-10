@@ -364,6 +364,7 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   }
 
   // 软权重计算
+  const weights = loadWeights();
   let score = 0;
   const factors: string[] = [];
 
@@ -371,33 +372,33 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   if (userMessage) {
     const contextMode = detectContextFromMessage(userMessage);
     if (contextMode === "voice") {
-      score += loadWeights().contextKeyword;
-      factors.push(`情境关键词:+${loadWeights().contextKeyword}`);
+      score += weights.contextKeyword;
+      factors.push(`情境关键词:+${weights.contextKeyword}`);
     } else if (contextMode === "text") {
-      score -= loadWeights().contextKeyword;
-      factors.push(`情境关键词:-${loadWeights().contextKeyword}`);
+      score -= weights.contextKeyword;
+      factors.push(`情境关键词:-${weights.contextKeyword}`);
     }
   }
 
   // 2. 用户输入方式
   if (config.rules.adaptiveRules.followUserInputMode && state.lastUserInputMode) {
     if (state.lastUserInputMode === "voice") {
-      score += loadWeights().userInputMode;
-      factors.push(`用户输入:+${loadWeights().userInputMode}`);
+      score += weights.userInputMode;
+      factors.push(`用户输入:+${weights.userInputMode}`);
     } else {
-      score -= loadWeights().userInputMode;
-      factors.push(`用户输入:-${loadWeights().userInputMode}`);
+      score -= weights.userInputMode;
+      factors.push(`用户输入:-${weights.userInputMode}`);
     }
   }
 
   // 3. 时间表
   const schedulePreference = getSchedulePreference();
   if (schedulePreference === "voice") {
-    score += loadWeights().schedule;
-    factors.push(`时间表:+${loadWeights().schedule}`);
+    score += weights.schedule;
+    factors.push(`时间表:+${weights.schedule}`);
   } else {
-    score -= loadWeights().schedule;
-    factors.push(`时间表:-${loadWeights().schedule}`);
+    score -= weights.schedule;
+    factors.push(`时间表:-${weights.schedule}`);
   }
 
   // 4. 间隔长短
@@ -405,11 +406,11 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     const interval = Date.now() - state.lastInteractionAt;
     if (interval > config.rules.adaptiveRules.longIntervalThresholdMs) {
       if (config.rules.adaptiveRules.longIntervalPreference === "voice") {
-        score += loadWeights().longInterval;
-        factors.push(`长间隔:+${loadWeights().longInterval}`);
+        score += weights.longInterval;
+        factors.push(`长间隔:+${weights.longInterval}`);
       } else {
-        score -= loadWeights().longInterval;
-        factors.push(`长间隔:-${loadWeights().longInterval}`);
+        score -= weights.longInterval;
+        factors.push(`长间隔:-${weights.longInterval}`);
       }
     }
   }
@@ -417,11 +418,11 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   // 5. 学习记录
   const learned = getLearnedPreference();
   if (learned === "voice") {
-    score += loadWeights().learned;
-    factors.push(`学习记录:+${loadWeights().learned}`);
+    score += weights.learned;
+    factors.push(`学习记录:+${weights.learned}`);
   } else if (learned === "text") {
-    score -= loadWeights().learned;
-    factors.push(`学习记录:-${loadWeights().learned}`);
+    score -= weights.learned;
+    factors.push(`学习记录:-${weights.learned}`);
   }
 
   // 保存计算过程用于调试
@@ -461,25 +462,32 @@ export function explainDecision(responseText: string, userMessage?: string): str
 export async function generateTTS(text: string): Promise<{ opusPath: string; durationMs: number }> {
   const tmpDir = os.tmpdir();
   const timestamp = Date.now();
+  const textPath = path.join(tmpDir, `tts_${timestamp}.txt`);
   const mp3Path = path.join(tmpDir, `tts_${timestamp}.mp3`);
   const opusPath = path.join(tmpDir, `tts_${timestamp}.opus`);
 
-  // Use Edge TTS with Chinese voice (XiaoxiaoNeural is natural and supports mixed Chinese/English)
-  const voice = "zh-CN-XiaoxiaoNeural";
-  const edgeCmd = `edge-tts --text "${text.replace(/"/g, '\\"')}" --voice ${voice} --write-media "${mp3Path}"`;
-  
-  execSync(edgeCmd, { stdio: "pipe" });
-  
-  // Convert to opus with volume boost (+12dB)
-  execSync(`ffmpeg -y -i "${mp3Path}" -af "volume=12dB" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`, { stdio: "pipe" });
+  // Write text to a temp file to avoid shell injection
+  fs.writeFileSync(textPath, text, "utf-8");
 
-  const durationStr = execSync(
-    `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${opusPath}"`,
-  ).toString().trim();
-  const durationMs = Math.round(parseFloat(durationStr) * 1000);
+  try {
+    // Use Edge TTS with Chinese voice (XiaoxiaoNeural is natural and supports mixed Chinese/English)
+    const voice = "zh-CN-XiaoxiaoNeural";
+    execSync(`edge-tts --file "${textPath}" --voice ${voice} --write-media "${mp3Path}"`, { stdio: "pipe" });
 
-  fs.unlinkSync(mp3Path);
-  return { opusPath, durationMs };
+    // Convert to opus with volume boost (+12dB)
+    execSync(`ffmpeg -y -i "${mp3Path}" -af "volume=12dB" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`, { stdio: "pipe" });
+
+    const durationStr = execSync(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${opusPath}"`,
+    ).toString().trim();
+    const durationMs = Math.round(parseFloat(durationStr) * 1000);
+
+    return { opusPath, durationMs };
+  } finally {
+    // Clean up intermediate files
+    if (fs.existsSync(textPath)) fs.unlinkSync(textPath);
+    if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
+  }
 }
 
 /**
@@ -505,7 +513,7 @@ export async function sendVoiceMessage(params: {
       accountId,
     });
 
-    return await sendAudioFeishu({ cfg, to, fileKey, replyToMessageId, accountId });
+    return await sendAudioFeishu({ cfg, to, fileKey, replyToMessageId, accountId, durationMs });
   } finally {
     if (fs.existsSync(opusPath)) {
       fs.unlinkSync(opusPath);
@@ -517,13 +525,11 @@ export async function sendVoiceMessage(params: {
  * Check if TTS is available
  */
 export function isTTSAvailable(): boolean {
-  const config = loadConfig();
   try {
-    return (
-      fs.existsSync(TTS_RUNTIME) &&
-      fs.existsSync(`${TTS_MODELS_DIR}/${config.models.zh.name}`) &&
-      fs.existsSync(`${TTS_MODELS_DIR}/${config.models["zh-en"].name}`)
-    );
+    // Check that edge-tts and ffmpeg are available on PATH
+    execSync("edge-tts --help", { stdio: "pipe", timeout: 5000 });
+    execSync("ffmpeg -version", { stdio: "pipe", timeout: 5000 });
+    return true;
   } catch {
     return false;
   }

@@ -6,7 +6,6 @@
  */
 
 import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
-import type { FeishuConfig } from "./types.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu } from "./send.js";
 
@@ -51,6 +50,7 @@ export type MenuHandler = (params: {
   event: FeishuMenuEvent;
   operatorOpenId: string;
   runtime?: RuntimeEnv;
+  accountId?: string;
 }) => Promise<void>;
 
 /**
@@ -59,6 +59,7 @@ export type MenuHandler = (params: {
 async function getSessionStatus(params: {
   operatorOpenId: string;
   cfg: ClawdbotConfig;
+  accountId?: string;
 }): Promise<{
   model?: string;
   totalTokens?: number;
@@ -74,6 +75,7 @@ async function getSessionStatus(params: {
   const route = core.channel.routing.resolveAgentRoute({
     cfg: params.cfg,
     channel: "feishu",
+    accountId: params.accountId,
     peer: { kind: "dm", id: params.operatorOpenId },
   });
 
@@ -141,17 +143,18 @@ const builtinHandlers: Record<string, MenuHandler> = {
   /**
    * /status - Show session status (instant response)
    */
-  status: async ({ cfg, operatorOpenId, runtime }) => {
+  status: async ({ cfg, operatorOpenId, runtime, accountId }) => {
     const log = runtime?.log ?? console.log;
 
     try {
-      const status = await getSessionStatus({ operatorOpenId, cfg });
+      const status = await getSessionStatus({ operatorOpenId, cfg, accountId });
 
       if (!status) {
         await sendMessageFeishu({
           cfg,
           to: operatorOpenId,
           text: "❌ 获取状态失败",
+          accountId,
         });
         return;
       }
@@ -186,6 +189,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
         cfg,
         to: operatorOpenId,
         text: message,
+        accountId,
       });
 
       log(`feishu: /status responded to ${operatorOpenId}`);
@@ -195,6 +199,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
         cfg,
         to: operatorOpenId,
         text: "❌ 获取状态失败，请稍后重试",
+        accountId,
       });
     }
   },
@@ -202,7 +207,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
   /**
    * /help - Show available commands (instant response)
    */
-  help: async ({ cfg, operatorOpenId, runtime }) => {
+  help: async ({ cfg, operatorOpenId, runtime, accountId }) => {
     const log = runtime?.log ?? console.log;
 
     const message = [
@@ -221,6 +226,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
       cfg,
       to: operatorOpenId,
       text: message,
+      accountId,
     });
 
     log(`feishu: /help responded to ${operatorOpenId}`);
@@ -229,17 +235,18 @@ const builtinHandlers: Record<string, MenuHandler> = {
   /**
    * /usage - Show token usage (instant response)
    */
-  usage: async ({ cfg, operatorOpenId, runtime }) => {
+  usage: async ({ cfg, operatorOpenId, runtime, accountId }) => {
     const log = runtime?.log ?? console.log;
 
     try {
-      const status = await getSessionStatus({ operatorOpenId, cfg });
+      const status = await getSessionStatus({ operatorOpenId, cfg, accountId });
 
       if (!status) {
         await sendMessageFeishu({
           cfg,
           to: operatorOpenId,
           text: "❌ 获取用量失败",
+          accountId,
         });
         return;
       }
@@ -270,6 +277,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
         cfg,
         to: operatorOpenId,
         text: message,
+        accountId,
       });
 
       log(`feishu: /usage responded to ${operatorOpenId}`);
@@ -279,6 +287,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
         cfg,
         to: operatorOpenId,
         text: "❌ 获取用量失败，请稍后重试",
+        accountId,
       });
     }
   },
@@ -286,17 +295,18 @@ const builtinHandlers: Record<string, MenuHandler> = {
   /**
    * /model - Show current model (instant response)
    */
-  model: async ({ cfg, operatorOpenId, runtime }) => {
+  model: async ({ cfg, operatorOpenId, runtime, accountId }) => {
     const log = runtime?.log ?? console.log;
 
     try {
-      const status = await getSessionStatus({ operatorOpenId, cfg });
+      const status = await getSessionStatus({ operatorOpenId, cfg, accountId });
 
       if (!status) {
         await sendMessageFeishu({
           cfg,
           to: operatorOpenId,
           text: "❌ 获取模型信息失败",
+          accountId,
         });
         return;
       }
@@ -318,6 +328,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
         cfg,
         to: operatorOpenId,
         text: message,
+        accountId,
       });
 
       log(`feishu: /model responded to ${operatorOpenId}`);
@@ -327,6 +338,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
         cfg,
         to: operatorOpenId,
         text: "❌ 获取模型信息失败，请稍后重试",
+        accountId,
       });
     }
   },
@@ -334,7 +346,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
   /**
    * /clear - Clear session history (instant response)
    */
-  clear: async ({ cfg, operatorOpenId, runtime }) => {
+  clear: async ({ cfg, operatorOpenId, runtime, accountId }) => {
     const log = runtime?.log ?? console.log;
 
     const message = [
@@ -349,6 +361,7 @@ const builtinHandlers: Record<string, MenuHandler> = {
       cfg,
       to: operatorOpenId,
       text: message,
+      accountId,
     });
 
     log(`feishu: /clear responded to ${operatorOpenId}`);
@@ -379,8 +392,9 @@ export async function handleFeishuMenuEvent(params: {
   cfg: ClawdbotConfig;
   event: FeishuMenuEvent;
   runtime?: RuntimeEnv;
+  accountId?: string;
 }): Promise<void> {
-  const { cfg, event, runtime } = params;
+  const { cfg, event, runtime, accountId } = params;
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
 
@@ -410,7 +424,7 @@ export async function handleFeishuMenuEvent(params: {
   const customHandler = customHandlers.get(eventKey);
   if (customHandler) {
     try {
-      await customHandler({ cfg, event, operatorOpenId, runtime });
+      await customHandler({ cfg, event, operatorOpenId, runtime, accountId });
       return;
     } catch (err) {
       error(`feishu: custom menu handler '${eventKey}' failed: ${String(err)}`);
@@ -422,7 +436,7 @@ export async function handleFeishuMenuEvent(params: {
   const builtinHandler = builtinHandlers[eventKey];
   if (builtinHandler) {
     try {
-      await builtinHandler({ cfg, event, operatorOpenId, runtime });
+      await builtinHandler({ cfg, event, operatorOpenId, runtime, accountId });
       return;
     } catch (err) {
       error(`feishu: builtin menu handler '${eventKey}' failed: ${String(err)}`);
