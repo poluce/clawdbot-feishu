@@ -1,6 +1,6 @@
 {
-  "id": "feishu-custom",
-  "channels": ["feishu"],
+  "id": "clawdbot_feishu",
+  "channels": ["clawdbot_feishu"],
   "skills": ["./skills"],
   "configSchema": {
     "type": "object",

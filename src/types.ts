@@ -30,12 +30,17 @@ export type FeishuMessageContext = {
   senderId: string;
   senderOpenId: string;
   senderName?: string;
-  chatType: "p2p" | "group";
+  chatType: "p2p" | "group" | "private";
   mentionedBot: boolean;
+  hasAnyMention?: boolean;
   rootId?: string;
   parentId?: string;
   content: string;
   contentType: string;
+  /** Media placeholder token (e.g. <media:audio>) when inbound message is media. */
+  placeholder?: string;
+  /** Raw provider payload string (original event.message.content). */
+  rawPayload?: string;
   /** Mention forward targets (excluding the bot itself) */
   mentionTargets?: MentionTarget[];
   /** Extracted message body (after removing @ placeholders) */
@@ -67,6 +72,10 @@ export type FeishuToolsConfig = {
   drive?: boolean;
   perm?: boolean;
   scopes?: boolean;
+  task?: boolean;
+  chat?: boolean;
+  /** Enable the feishu_urgent tool (buzz/urgent notifications). Enabled by default. */
+  urgent?: boolean;
 };
 
 export type DynamicAgentCreationConfig = {

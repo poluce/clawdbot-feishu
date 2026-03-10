@@ -1,22 +1,14 @@
-/**
- * TTS (Text-to-Speech) module for Feishu
- * 智能语音/文本切换：情境感知 + 习惯学习 + 规则兜底
- */
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
 import { execSync } from "child_process";
 import fs from "fs";
-import path from "path";
 import os from "os";
-import { uploadFileFeishu, sendAudioFeishu, type SendMediaResult } from "./media.js";
+import path from "path";
+import { sendAudioFeishu, type SendMediaResult, uploadFileFeishu } from "./media.js";
 
-// Paths
 const SKILL_DIR = `${os.homedir()}/.openclaw/workspace/skills/feishu-voice`;
 const SKILL_CONFIG_PATH = `${SKILL_DIR}/skill.json`;
 const STATE_PATH = `${SKILL_DIR}/state.json`;
-const TTS_RUNTIME = `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/runtime/bin/sherpa-onnx-offline-tts`;
-const TTS_MODELS_DIR = `${os.homedir()}/.openclaw/tools/sherpa-onnx-tts/models`;
 
-// Types
 interface VoiceState {
   currentMode: "auto" | "voice" | "text";
   modeSetAt: number | null;
@@ -60,7 +52,6 @@ interface SkillConfig {
   };
 }
 
-// Default config
 const DEFAULT_CONFIG: SkillConfig = {
   models: {
     zh: { name: "vits-zh-hf-fanchen-C", lengthScale: 0.65 },
@@ -101,9 +92,14 @@ const DEFAULT_STATE: VoiceState = {
   corrections: [],
 };
 
-/**
- * Load skill configuration
- */
+const DEFAULT_WEIGHTS = {
+  contextKeyword: 0.6,
+  userInputMode: 0.3,
+  schedule: 0.2,
+  longInterval: 0.15,
+  learned: 0.25,
+};
+
 function loadConfig(): SkillConfig {
   try {
     if (fs.existsSync(SKILL_CONFIG_PATH)) {
@@ -119,41 +115,33 @@ function loadConfig(): SkillConfig {
         },
       };
     }
-  } catch (e) {
-    console.error("Failed to load skill config:", e);
+  } catch (error) {
+    console.error("Failed to load skill config:", error);
   }
   return DEFAULT_CONFIG;
 }
 
-/**
- * Load state
- */
 function loadState(): VoiceState {
   try {
     if (fs.existsSync(STATE_PATH)) {
       const raw = fs.readFileSync(STATE_PATH, "utf-8");
       return { ...DEFAULT_STATE, ...JSON.parse(raw) };
     }
-  } catch (e) {
-    console.error("Failed to load state:", e);
+  } catch (error) {
+    console.error("Failed to load state:", error);
   }
   return DEFAULT_STATE;
 }
 
-/**
- * Save state
- */
 function saveState(state: VoiceState): void {
   try {
+    fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
     fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-  } catch (e) {
-    console.error("Failed to save state:", e);
+  } catch (error) {
+    console.error("Failed to save state:", error);
   }
 }
 
-/**
- * Update last interaction time
- */
 export function updateInteraction(userInputMode?: "voice" | "text"): void {
   const state = loadState();
   state.lastInteractionAt = Date.now();
@@ -163,9 +151,6 @@ export function updateInteraction(userInputMode?: "voice" | "text"): void {
   saveState(state);
 }
 
-/**
- * Set temporary mode (e.g., user says "用语音")
- */
 export function setTemporaryMode(mode: "voice" | "text" | "auto", durationMs?: number): void {
   const state = loadState();
   state.currentMode = mode;
@@ -174,9 +159,6 @@ export function setTemporaryMode(mode: "voice" | "text" | "auto", durationMs?: n
   saveState(state);
 }
 
-/**
- * Record a correction (user asked for different mode)
- */
 export function recordCorrection(correctedTo: "voice" | "text"): void {
   const state = loadState();
   const now = new Date();
@@ -186,31 +168,17 @@ export function recordCorrection(correctedTo: "voice" | "text"): void {
     hour: now.getHours(),
     correctedTo,
   });
-  // Keep only last 50 corrections
   if (state.corrections.length > 50) {
     state.corrections = state.corrections.slice(-50);
   }
   saveState(state);
 }
 
-/**
- * Check if text contains English words
- */
-function containsEnglish(text: string): boolean {
-  return /[a-zA-Z]{2,}/.test(text);
-}
-
-/**
- * Parse time string "HH:MM" to minutes since midnight
- */
 function parseTime(timeStr: string): number {
-  const [h, m] = timeStr.split(":").map(Number);
-  return h * 60 + m;
+  const [hour, minute] = timeStr.split(":").map(Number);
+  return hour * 60 + minute;
 }
 
-/**
- * Check if content MUST use text (code, long content, etc.)
- */
 export function mustUseText(text: string): boolean {
   const config = loadConfig();
   const rules = config.rules.forceText;
@@ -220,41 +188,30 @@ export function mustUseText(text: string): boolean {
   if (rules.tables && /\|.*\|.*\|/.test(text)) return true;
   if (text.length > rules.maxChars) return true;
   if (rules.techKeywords) {
-    const techKeywords = /\b(function|const|let|var|import|export|class|interface|type|async|await|return|if|else|for|while|npm|git|docker|api|http|json|xml|sql|bash|shell|python|javascript|typescript|node|react|vue)\b/i;
+    const techKeywords =
+      /\b(function|const|let|var|import|export|class|interface|type|async|await|return|if|else|for|while|npm|git|docker|api|http|json|xml|sql|bash|shell|python|javascript|typescript|node|react|vue)\b/i;
     if (techKeywords.test(text)) return true;
   }
   return false;
 }
 
-/**
- * Detect context from recent user message
- */
 export function detectContextFromMessage(userMessage: string): "voice" | "text" | null {
   const config = loadConfig();
-  const keywords = config.rules.contextKeywords;
-
-  for (const kw of keywords.voice) {
-    if (userMessage.includes(kw)) return "voice";
+  for (const keyword of config.rules.contextKeywords.voice) {
+    if (userMessage.includes(keyword)) return "voice";
   }
-  for (const kw of keywords.text) {
-    if (userMessage.includes(kw)) return "text";
+  for (const keyword of config.rules.contextKeywords.text) {
+    if (userMessage.includes(keyword)) return "text";
   }
   return null;
 }
 
-/**
- * Check schedule-based preference
- */
 function getSchedulePreference(): "voice" | "text" {
-  const config = loadConfig();
-  const schedule = config.rules.schedule;
-
+  const schedule = loadConfig().rules.schedule;
   const now = new Date();
   const shanghaiTime = new Date(now.toLocaleString("en-US", { timeZone: schedule.timezone }));
   const day = shanghaiTime.getDay();
-  const hour = shanghaiTime.getHours();
-  const minute = shanghaiTime.getMinutes();
-  const currentTime = hour * 60 + minute;
+  const currentTime = shanghaiTime.getHours() * 60 + shanghaiTime.getMinutes();
 
   if (day === 0 || day === 6) {
     return schedule.weekend;
@@ -264,19 +221,16 @@ function getSchedulePreference(): "voice" | "text" {
     const [startStr, endStr] = timeRange.split("-");
     const start = parseTime(startStr);
     const end = parseTime(endStr);
-
     if (start > end) {
       if (currentTime >= start || currentTime < end) return mode;
-    } else {
-      if (currentTime >= start && currentTime < end) return mode;
+    } else if (currentTime >= start && currentTime < end) {
+      return mode;
     }
   }
+
   return "voice";
 }
 
-/**
- * Check if there's a learned pattern for current time
- */
 function getLearnedPreference(): "voice" | "text" | null {
   const state = loadState();
   if (state.corrections.length < 3) return null;
@@ -284,36 +238,19 @@ function getLearnedPreference(): "voice" | "text" | null {
   const now = new Date();
   const currentDay = now.getDay();
   const currentHour = now.getHours();
-
-  // Find corrections at similar time (same day of week, within 2 hours)
-  const relevantCorrections = state.corrections.filter(c => 
-    c.dayOfWeek === currentDay && Math.abs(c.hour - currentHour) <= 2
+  const relevantCorrections = state.corrections.filter(
+    (item) => item.dayOfWeek === currentDay && Math.abs(item.hour - currentHour) <= 2,
   );
 
-  if (relevantCorrections.length >= 2) {
-    // If most recent corrections at this time prefer voice/text, use that
-    const recent = relevantCorrections.slice(-3);
-    const voiceCount = recent.filter(c => c.correctedTo === "voice").length;
-    if (voiceCount >= 2) return "voice";
-    if (voiceCount === 0) return "text";
-  }
+  if (relevantCorrections.length < 2) return null;
+
+  const recent = relevantCorrections.slice(-3);
+  const voiceCount = recent.filter((item) => item.correctedTo === "voice").length;
+  if (voiceCount >= 2) return "voice";
+  if (voiceCount === 0) return "text";
   return null;
 }
 
-/**
- * Weight configuration for scoring (loaded from config)
- */
-const DEFAULT_WEIGHTS = {
-  contextKeyword: 0.6,      // 情境关键词（开车、到公司）— 最强信号
-  userInputMode: 0.3,       // 用户输入方式（发语音/打字）
-  schedule: 0.2,            // 时间表
-  longInterval: 0.15,       // 间隔较长
-  learned: 0.25,            // 学习记录
-};
-
-/**
- * Load weights from config
- */
 function loadWeights(): typeof DEFAULT_WEIGHTS {
   try {
     if (fs.existsSync(SKILL_CONFIG_PATH)) {
@@ -321,32 +258,13 @@ function loadWeights(): typeof DEFAULT_WEIGHTS {
       const json = JSON.parse(raw);
       return { ...DEFAULT_WEIGHTS, ...json.config?.weights };
     }
-  } catch (e) {
-    console.error("Failed to load weights:", e);
+  } catch (error) {
+    console.error("Failed to load weights:", error);
   }
   return DEFAULT_WEIGHTS;
 }
 
-/**
- * Main decision function: should we send as voice?
- * 
- * 混合方案：硬规则 + 软权重
- * 
- * 硬规则（一票否决）：
- * - 代码/长内容 → 强制文本
- * - 临时模式 → 强制该模式
- * 
- * 软权重（多信号叠加）：
- * - 情境关键词 → ±0.5
- * - 用户输入方式 → ±0.35
- * - 时间表 → ±0.25
- * - 间隔长短 → ±0.15
- * - 学习记录 → ±0.3
- * 
- * 得分 > 0 → 语音
- */
 export function shouldSendAsVoice(responseText: string, userMessage?: string): boolean {
-  // 硬规则1: 代码/长内容 → 强制文本
   if (mustUseText(responseText)) {
     return false;
   }
@@ -354,7 +272,6 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
   const state = loadState();
   const config = loadConfig();
 
-  // 硬规则2: 临时模式 → 强制该模式
   if (state.currentMode !== "auto") {
     if (state.modeExpiresAt && Date.now() > state.modeExpiresAt) {
       setTemporaryMode("auto");
@@ -363,12 +280,10 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     }
   }
 
-  // 软权重计算
   const weights = loadWeights();
   let score = 0;
   const factors: string[] = [];
 
-  // 1. 情境关键词
   if (userMessage) {
     const contextMode = detectContextFromMessage(userMessage);
     if (contextMode === "voice") {
@@ -380,7 +295,6 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     }
   }
 
-  // 2. 用户输入方式
   if (config.rules.adaptiveRules.followUserInputMode && state.lastUserInputMode) {
     if (state.lastUserInputMode === "voice") {
       score += weights.userInputMode;
@@ -391,7 +305,6 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     }
   }
 
-  // 3. 时间表
   const schedulePreference = getSchedulePreference();
   if (schedulePreference === "voice") {
     score += weights.schedule;
@@ -401,7 +314,6 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     factors.push(`时间表:-${weights.schedule}`);
   }
 
-  // 4. 间隔长短
   if (state.lastInteractionAt) {
     const interval = Date.now() - state.lastInteractionAt;
     if (interval > config.rules.adaptiveRules.longIntervalThresholdMs) {
@@ -415,7 +327,6 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     }
   }
 
-  // 5. 学习记录
   const learned = getLearnedPreference();
   if (learned === "voice") {
     score += weights.learned;
@@ -425,22 +336,20 @@ export function shouldSendAsVoice(responseText: string, userMessage?: string): b
     factors.push(`学习记录:-${weights.learned}`);
   }
 
-  // 保存计算过程用于调试
-  (globalThis as any).__lastVoiceScore = { score, factors };
+  (globalThis as { __lastVoiceScore?: { score: number; factors: string[] } }).__lastVoiceScore = {
+    score,
+    factors,
+  };
 
   return score > 0;
 }
 
-/**
- * Get explanation of current decision (for debugging)
- */
 export function explainDecision(responseText: string, userMessage?: string): string {
   if (mustUseText(responseText)) {
     return "【硬规则】内容包含代码/过长，强制文本";
   }
 
   const state = loadState();
-
   if (state.currentMode !== "auto") {
     if (state.modeExpiresAt && Date.now() > state.modeExpiresAt) {
       return "临时模式已过期，恢复自动";
@@ -448,17 +357,14 @@ export function explainDecision(responseText: string, userMessage?: string): str
     return `【硬规则】临时模式：${state.currentMode}`;
   }
 
-  // 触发一次计算
   const result = shouldSendAsVoice(responseText, userMessage);
-  const scoreInfo = (globalThis as any).__lastVoiceScore || { score: 0, factors: [] };
-  
+  const scoreInfo =
+    (globalThis as { __lastVoiceScore?: { score: number; factors: string[] } }).__lastVoiceScore ??
+    { score: 0, factors: [] };
   const factorStr = scoreInfo.factors.length > 0 ? scoreInfo.factors.join(", ") : "无信号";
   return `【权重计算】${factorStr} → 总分=${scoreInfo.score.toFixed(2)} → ${result ? "语音" : "文本"}`;
 }
 
-/**
- * Generate TTS audio file from text using Edge TTS
- */
 export async function generateTTS(text: string): Promise<{ opusPath: string; durationMs: number }> {
   const tmpDir = os.tmpdir();
   const timestamp = Date.now();
@@ -466,33 +372,30 @@ export async function generateTTS(text: string): Promise<{ opusPath: string; dur
   const mp3Path = path.join(tmpDir, `tts_${timestamp}.mp3`);
   const opusPath = path.join(tmpDir, `tts_${timestamp}.opus`);
 
-  // Write text to a temp file to avoid shell injection
   fs.writeFileSync(textPath, text, "utf-8");
 
   try {
-    // Use Edge TTS with Chinese voice (XiaoxiaoNeural is natural and supports mixed Chinese/English)
     const voice = "zh-CN-XiaoxiaoNeural";
-    execSync(`edge-tts --file "${textPath}" --voice ${voice} --write-media "${mp3Path}"`, { stdio: "pipe" });
-
-    // Convert to opus with volume boost (+12dB)
-    execSync(`ffmpeg -y -i "${mp3Path}" -af "volume=12dB" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`, { stdio: "pipe" });
-
+    execSync(`edge-tts --file "${textPath}" --voice ${voice} --write-media "${mp3Path}"`, {
+      stdio: "pipe",
+    });
+    execSync(
+      `ffmpeg -y -i "${mp3Path}" -af "volume=12dB" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`,
+      { stdio: "pipe" },
+    );
     const durationStr = execSync(
       `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${opusPath}"`,
-    ).toString().trim();
+    )
+      .toString()
+      .trim();
     const durationMs = Math.round(parseFloat(durationStr) * 1000);
-
     return { opusPath, durationMs };
   } finally {
-    // Clean up intermediate files
     if (fs.existsSync(textPath)) fs.unlinkSync(textPath);
     if (fs.existsSync(mp3Path)) fs.unlinkSync(mp3Path);
   }
 }
 
-/**
- * Send text as voice message
- */
 export async function sendVoiceMessage(params: {
   cfg: ClawdbotConfig;
   to: string;
@@ -513,7 +416,14 @@ export async function sendVoiceMessage(params: {
       accountId,
     });
 
-    return await sendAudioFeishu({ cfg, to, fileKey, replyToMessageId, accountId, durationMs });
+    return await sendAudioFeishu({
+      cfg,
+      to,
+      fileKey,
+      replyToMessageId,
+      accountId,
+      durationMs,
+    });
   } finally {
     if (fs.existsSync(opusPath)) {
       fs.unlinkSync(opusPath);
@@ -521,23 +431,17 @@ export async function sendVoiceMessage(params: {
   }
 }
 
-/**
- * Check if TTS is available
- */
 export function isTTSAvailable(): boolean {
   try {
-    // Check that edge-tts and ffmpeg are available on PATH
     execSync("edge-tts --help", { stdio: "pipe", timeout: 5000 });
     execSync("ffmpeg -version", { stdio: "pipe", timeout: 5000 });
+    execSync("ffprobe -version", { stdio: "pipe", timeout: 5000 });
     return true;
   } catch {
     return false;
   }
 }
 
-/**
- * Get current config and state (for debugging)
- */
 export function getDebugInfo() {
   return {
     config: loadConfig(),

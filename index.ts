@@ -2,11 +2,14 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { feishuPlugin } from "./src/channel.js";
 import { setFeishuRuntime } from "./src/runtime.js";
-import { registerFeishuDocTools } from "./src/docx.js";
-import { registerFeishuWikiTools } from "./src/wiki.js";
-import { registerFeishuDriveTools } from "./src/drive.js";
-import { registerFeishuPermTools } from "./src/perm.js";
-import { registerFeishuBitableTools } from "./src/bitable.js";
+import { registerFeishuBitableTools } from "./src/bitable-tools/index.js";
+import { registerFeishuDocTools } from "./src/doc-tools/index.js";
+import { registerFeishuDriveTools } from "./src/drive-tools/index.js";
+import { registerFeishuPermTools } from "./src/perm-tools/index.js";
+import { registerFeishuTaskTools } from "./src/task-tools/index.js";
+import { registerFeishuChatTools } from "./src/chat-tools/index.js";
+import { registerFeishuUrgentTools } from "./src/urgent-tools/index.js";
+import { registerFeishuWikiTools } from "./src/wiki-tools/index.js";
 
 export { monitorFeishuProvider } from "./src/monitor.js";
 export {
@@ -23,13 +26,14 @@ export {
   sendFileFeishu,
   sendMediaFeishu,
 } from "./src/media.js";
-export { probeFeishu } from "./src/probe.js";
+export { probeFeishu, clearProbeCache } from "./src/probe.js";
 export {
   addReactionFeishu,
   removeReactionFeishu,
   listReactionsFeishu,
   FeishuEmoji,
 } from "./src/reactions.js";
+export { urgentMessageFeishu, type FeishuUrgentType } from "./src/urgent-tools/index.js";
 export {
   extractMentionTargets,
   extractMessageBody,
@@ -42,17 +46,10 @@ export {
   buildMentionedCardContent,
   type MentionTarget,
 } from "./src/mention.js";
-export {
-  handleFeishuMenuEvent,
-  registerMenuHandler,
-  unregisterMenuHandler,
-  type FeishuMenuEvent,
-  type MenuHandler,
-} from "./src/menu.js";
 export { feishuPlugin } from "./src/channel.js";
 
 const plugin = {
-  id: "feishu-custom",
+  id: "clawdbot_feishu",
   name: "Feishu",
   description: "Feishu/Lark channel plugin",
   configSchema: emptyPluginConfigSchema(),
@@ -64,6 +61,9 @@ const plugin = {
     registerFeishuDriveTools(api);
     registerFeishuPermTools(api);
     registerFeishuBitableTools(api);
+    registerFeishuTaskTools(api);
+    registerFeishuChatTools(api);
+    registerFeishuUrgentTools(api);
   },
 };
 

@@ -1,11 +1,15 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import * as http from "http";
-import type { ClawdbotConfig, RuntimeEnv, HistoryEntry } from "openclaw/plugin-sdk";
+import {
+  type ClawdbotConfig,
+  type RuntimeEnv,
+  type HistoryEntry,
+  installRequestBodyLimitGuard,
+} from "openclaw/plugin-sdk";
 import type { ResolvedFeishuAccount } from "./types.js";
 import { createFeishuWSClient, createEventDispatcher } from "./client.js";
 import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
 import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
-import { handleFeishuMenuEvent, type FeishuMenuEvent } from "./menu.js";
 import { probeFeishu } from "./probe.js";
 
 export type MonitorFeishuOpts = {
@@ -19,6 +23,8 @@ export type MonitorFeishuOpts = {
 const wsClients = new Map<string, Lark.WSClient>();
 const httpServers = new Map<string, http.Server>();
 const botOpenIds = new Map<string, string>();
+const FEISHU_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
+const FEISHU_WEBHOOK_BODY_TIMEOUT_MS = 30_000;
 
 async function fetchBotOpenId(
   account: ResolvedFeishuAccount,
@@ -29,6 +35,26 @@ async function fetchBotOpenId(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Per-chat serial queue that ensures messages from the same chat are processed
+ * in arrival order while allowing different chats to run concurrently.
+ * Uses .then(task, task) so a failure in one message never blocks the next.
+ */
+function createChatQueue() {
+  const queues = new Map<string, Promise<void>>();
+  return (chatId: string, task: () => Promise<void>): Promise<void> => {
+    const prev = queues.get(chatId) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    queues.set(chatId, next);
+    void next.finally(() => {
+      if (queues.get(chatId) === next) {
+        queues.delete(chatId);
+      }
+    });
+    return next;
+  };
 }
 
 /**
@@ -49,19 +75,23 @@ function registerEventHandlers(
   const { cfg, accountId, runtime, chatHistories, fireAndForget } = context;
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
+  const enqueue = createChatQueue();
 
   eventDispatcher.register({
     "im.message.receive_v1": async (data) => {
       try {
         const event = data as unknown as FeishuMessageEvent;
-        const promise = handleFeishuMessage({
-          cfg,
-          event,
-          botOpenId: botOpenIds.get(accountId),
-          runtime,
-          chatHistories,
-          accountId,
-        });
+        const chatId = event.message.chat_id?.trim() || "unknown";
+        const task = () =>
+          handleFeishuMessage({
+            cfg,
+            event,
+            botOpenId: botOpenIds.get(accountId),
+            runtime,
+            chatHistories,
+            accountId,
+          });
+        const promise = enqueue(chatId, task);
         if (fireAndForget) {
           promise.catch((err) => {
             error(`feishu[${accountId}]: error handling message: ${String(err)}`);
@@ -90,19 +120,6 @@ function registerEventHandlers(
         log(`feishu[${accountId}]: bot removed from chat ${event.chat_id}`);
       } catch (err) {
         error(`feishu[${accountId}]: error handling bot removed event: ${String(err)}`);
-      }
-    },
-    "application.bot.menu_v6": async (data) => {
-      try {
-        const event = data as unknown as FeishuMenuEvent;
-        await handleFeishuMenuEvent({
-          cfg,
-          event,
-          runtime,
-          accountId,
-        });
-      } catch (err) {
-        error(`feishu[${accountId}]: error handling menu event: ${String(err)}`);
       }
     },
   });
@@ -205,7 +222,27 @@ async function monitorWebhook({ params, accountId, eventDispatcher }: Connection
   log(`feishu[${accountId}]: starting Webhook server on port ${port}, path ${path}...`);
 
   const server = http.createServer();
-  server.on("request", Lark.adaptDefault(path, eventDispatcher, { autoChallenge: true }));
+  const webhookHandler = Lark.adaptDefault(path, eventDispatcher, { autoChallenge: true });
+  server.on("request", (req, res) => {
+    const guard = installRequestBodyLimitGuard(req, res, {
+      maxBytes: FEISHU_WEBHOOK_MAX_BODY_BYTES,
+      timeoutMs: FEISHU_WEBHOOK_BODY_TIMEOUT_MS,
+      responseFormat: "text",
+    });
+    if (guard.isTripped()) {
+      return;
+    }
+
+    void Promise.resolve(webhookHandler(req, res))
+      .catch((err) => {
+        if (!guard.isTripped()) {
+          error(`feishu[${accountId}]: webhook handler error: ${String(err)}`);
+        }
+      })
+      .finally(() => {
+        guard.dispose();
+      });
+  });
   httpServers.set(accountId, server);
 
   return new Promise((resolve, reject) => {
