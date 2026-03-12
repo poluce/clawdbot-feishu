@@ -1,5 +1,5 @@
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
-import { execSync } from "child_process";
+import { spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -99,6 +99,72 @@ const DEFAULT_WEIGHTS = {
   longInterval: 0.15,
   learned: 0.25,
 };
+
+type CommandSpec = {
+  command: string;
+  args?: string[];
+  display: string;
+};
+
+type TTSAvailability = {
+  available: boolean;
+  missing: string[];
+  ttsCommand?: string;
+  ffmpegCommand?: string;
+  ffprobeCommand?: string;
+};
+
+const AVAILABILITY_CACHE_TTL_MS = 30_000;
+
+const EDGE_TTS_CANDIDATES: CommandSpec[] = [
+  { command: "edge-tts", display: "edge-tts" },
+  { command: "python", args: ["-m", "edge_tts"], display: "python -m edge_tts" },
+  { command: "py", args: ["-m", "edge_tts"], display: "py -m edge_tts" },
+];
+
+const FFMPEG_CANDIDATES: CommandSpec[] = [{ command: "ffmpeg", display: "ffmpeg" }];
+const FFPROBE_CANDIDATES: CommandSpec[] = [{ command: "ffprobe", display: "ffprobe" }];
+
+let cachedAvailability:
+  | {
+      value: TTSAvailability;
+      expiresAt: number;
+    }
+  | null = null;
+
+function tryResolveCommand(candidates: CommandSpec[], probeArgs: string[]): CommandSpec | undefined {
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate.command, [...(candidate.args ?? []), ...probeArgs], {
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (result.status === 0) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function runCommand(spec: CommandSpec, args: string[], purpose: string): string {
+  const result = spawnSync(spec.command, [...(spec.args ?? []), ...args], {
+    encoding: "utf-8",
+    stdio: "pipe",
+    windowsHide: true,
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    const details = (result.stderr || result.stdout || "").trim();
+    throw new Error(`${purpose} failed via "${spec.display}"${details ? `: ${details}` : ""}`);
+  }
+
+  return result.stdout ?? "";
+}
 
 function loadConfig(): SkillConfig {
   try {
@@ -264,6 +330,42 @@ function loadWeights(): typeof DEFAULT_WEIGHTS {
   return DEFAULT_WEIGHTS;
 }
 
+export function getTTSAvailability(forceRefresh = false): TTSAvailability {
+  const now = Date.now();
+  if (!forceRefresh && cachedAvailability && cachedAvailability.expiresAt > now) {
+    return cachedAvailability.value;
+  }
+
+  const tts = tryResolveCommand(EDGE_TTS_CANDIDATES, ["--help"]);
+  const ffmpeg = tryResolveCommand(FFMPEG_CANDIDATES, ["-version"]);
+  const ffprobe = tryResolveCommand(FFPROBE_CANDIDATES, ["-version"]);
+
+  const value: TTSAvailability = {
+    available: Boolean(tts && ffmpeg && ffprobe),
+    missing: [
+      ...(tts ? [] : ["edge-tts (or python -m edge_tts / py -m edge_tts)"]),
+      ...(ffmpeg ? [] : ["ffmpeg"]),
+      ...(ffprobe ? [] : ["ffprobe"]),
+    ],
+    ttsCommand: tts?.display,
+    ffmpegCommand: ffmpeg?.display,
+    ffprobeCommand: ffprobe?.display,
+  };
+
+  cachedAvailability = {
+    value,
+    expiresAt: now + AVAILABILITY_CACHE_TTL_MS,
+  };
+
+  return value;
+}
+
+export function getTTSUnavailableReason(): string | undefined {
+  const availability = getTTSAvailability();
+  if (availability.available) return undefined;
+  return `TTS unavailable: missing ${availability.missing.join(", ")}`;
+}
+
 export function shouldSendAsVoice(responseText: string, userMessage?: string): boolean {
   if (mustUseText(responseText)) {
     return false;
@@ -371,24 +473,43 @@ export async function generateTTS(text: string): Promise<{ opusPath: string; dur
   const textPath = path.join(tmpDir, `tts_${timestamp}.txt`);
   const mp3Path = path.join(tmpDir, `tts_${timestamp}.mp3`);
   const opusPath = path.join(tmpDir, `tts_${timestamp}.opus`);
+  const availability = getTTSAvailability();
 
   fs.writeFileSync(textPath, text, "utf-8");
 
   try {
+    const ttsCommand = tryResolveCommand(EDGE_TTS_CANDIDATES, ["--help"]);
+    const ffmpegCommand = tryResolveCommand(FFMPEG_CANDIDATES, ["-version"]);
+    const ffprobeCommand = tryResolveCommand(FFPROBE_CANDIDATES, ["-version"]);
+    if (!ttsCommand || !ffmpegCommand || !ffprobeCommand) {
+      throw new Error(
+        `Cannot generate TTS audio. Missing dependencies: ${availability.missing.join(", ")}`,
+      );
+    }
+
     const voice = "zh-CN-XiaoxiaoNeural";
-    execSync(`edge-tts --file "${textPath}" --voice ${voice} --write-media "${mp3Path}"`, {
-      stdio: "pipe",
-    });
-    execSync(
-      `ffmpeg -y -i "${mp3Path}" -af "volume=12dB" -acodec libopus -ac 1 -ar 16000 "${opusPath}"`,
-      { stdio: "pipe" },
+    runCommand(
+      ttsCommand,
+      ["--file", textPath, "--voice", voice, "--write-media", mp3Path],
+      "edge TTS synthesis",
     );
-    const durationStr = execSync(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${opusPath}"`,
-    )
-      .toString()
-      .trim();
-    const durationMs = Math.round(parseFloat(durationStr) * 1000);
+    runCommand(
+      ffmpegCommand,
+      ["-y", "-i", mp3Path, "-af", "volume=12dB", "-acodec", "libopus", "-ac", "1", "-ar", "16000", opusPath],
+      "ffmpeg Opus conversion",
+    );
+    const durationStr = runCommand(
+      ffprobeCommand,
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", opusPath],
+      "ffprobe duration probe",
+    ).trim();
+    const durationSec = Number.parseFloat(durationStr);
+    if (!Number.isFinite(durationSec) || durationSec <= 0) {
+      throw new Error(
+        `ffprobe returned an invalid duration for generated audio: ${durationStr || "<empty>"}`,
+      );
+    }
+    const durationMs = Math.round(durationSec * 1000);
     return { opusPath, durationMs };
   } finally {
     if (fs.existsSync(textPath)) fs.unlinkSync(textPath);
@@ -432,14 +553,7 @@ export async function sendVoiceMessage(params: {
 }
 
 export function isTTSAvailable(): boolean {
-  try {
-    execSync("edge-tts --help", { stdio: "pipe", timeout: 5000 });
-    execSync("ffmpeg -version", { stdio: "pipe", timeout: 5000 });
-    execSync("ffprobe -version", { stdio: "pipe", timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+  return getTTSAvailability().available;
 }
 
 export function getDebugInfo() {
@@ -447,5 +561,6 @@ export function getDebugInfo() {
     config: loadConfig(),
     state: loadState(),
     ttsAvailable: isTTSAvailable(),
+    availability: getTTSAvailability(),
   };
 }

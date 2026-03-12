@@ -131,6 +131,7 @@ openclaw plugins list | rg -i feishu
 | `im:chat.announcement` | `feishu_chat` | Write/update group announcement |
 | `im:chat` | `feishu_chat` | Create and delete group chats |
 | `im:chat.members` | `feishu_chat` | Add members to group chats |
+| `im:resource` + `im:message:send_as_bot` | `feishu_voice` | Synthesize text into voice and send as a Feishu audio message |
 
 > Task scope names may vary slightly in Feishu console UI. If needed, search for Task / Tasklist / Comment / Attachment-related permissions and grant read/write accordingly.
 
@@ -261,7 +262,34 @@ channels:
     mediaMaxMb: 30
     # Render mode for bot replies: "auto" | "raw" | "card"
     renderMode: "auto"
+    # Optional voice replies (requires edge-tts + ffmpeg + ffprobe)
+    tts:
+      enabled: true
+      force: false
 ```
+
+#### Voice Replies (TTS)
+
+Voice replies are optional and require extra local dependencies on the OpenClaw host:
+
+1. `edge-tts` CLI, or a Python install that can run `python -m edge_tts` / `py -m edge_tts`
+2. `ffmpeg`
+3. `ffprobe`
+
+Notes:
+- If these dependencies are missing, the plugin falls back to normal text replies.
+- When `tts.force: true`, the plugin now logs which dependency is missing instead of silently falling back.
+- The repo currently does not bundle these binaries for you; they must be installed on the machine running OpenClaw.
+- The registered tool name is `feishu_voice`. It supports `action: "send"`, `action: "debug"`, and `action: "set_mode"`.
+- `action: "set_mode"` lets the LLM temporarily switch reply mode between `voice`, `text`, and `auto` without editing config files.
+
+Quick self-check:
+
+```bash
+npm run debug:tts
+```
+
+The command prints whether TTS is available and which dependency is missing.
 
 #### DM Policy & Access Control
 
@@ -479,6 +507,7 @@ session:
 - **Task tools**: Create, get details, update, and delete tasks via Feishu Task v2 API
 - **Chat tools**: Read and write group announcements, create group chats, add members, check bot membership, delete chats (`feishu_chat`)
 - **Urgent notification tools**: Send buzz/urgent notifications (app, SMS, voice call) via `feishu_urgent`
+- **Voice tool**: Use `feishu_voice` to synthesize text into a Feishu audio message, or inspect local TTS availability
 - **@mention forwarding**: When you @mention someone in your message, the bot's reply will automatically @mention them too
 - **Permission error notification**: When the bot encounters a Feishu API permission error, it automatically notifies the user with the permission grant URL
 - **Dynamic agent creation**: Each DM user can have their own isolated agent instance with dedicated workspace (optional)
@@ -647,6 +676,7 @@ openclaw plugins list | rg -i feishu
 | `im:chat.announcement` | `feishu_chat` | 写入/更新群公告 |
 | `im:chat` | `feishu_chat` | 创建和删除群聊 |
 | `im:chat.members` | `feishu_chat` | 向群聊添加成员 |
+| `im:resource` + `im:message:send_as_bot` | `feishu_voice` | 将文本合成为语音并作为飞书音频消息发送 |
 
 > 飞书控制台中任务权限的显示名称可能略有差异，必要时可按关键字 `task` / `tasklist` / `comment` / `attachment` 搜索并授予对应读写权限。
 
@@ -776,6 +806,53 @@ channels:
     mediaMaxMb: 30
     # 回复渲染模式: "auto" | "raw" | "card"
     renderMode: "auto"
+    # 可选语音回复（依赖 edge-tts + ffmpeg + ffprobe）
+    tts:
+      enabled: true
+      force: false
+```
+
+#### 语音回复（TTS）
+
+语音回复是可选能力，需要在 OpenClaw 所在机器额外安装本地依赖：
+
+1. `edge-tts` 命令，或可运行 `python -m edge_tts` / `py -m edge_tts` 的 Python 环境
+2. `ffmpeg`
+3. `ffprobe`
+
+说明：
+- 如果这些依赖缺失，插件会自动回退到普通文本回复。
+- 当 `tts.force: true` 时，插件现在会明确记录缺少哪个依赖，而不是静默回退。
+- 仓库本身不会打包这些二进制，请在运行 OpenClaw 的机器上自行安装。
+- 注册出来的工具名是 `feishu_voice`，支持 `action: "send"`、`action: "debug"` 和 `action: "set_mode"`。
+- `action: "set_mode"` 可以让 LLM 在不改配置文件的前提下，临时把回复模式切到 `voice`、`text` 或 `auto`。
+
+快速自检：
+
+```bash
+npm run debug:tts
+```
+
+这个命令会输出当前 TTS 是否可用，以及缺少的是哪一个依赖。
+
+工具调用示例：
+
+```json
+{ "action": "set_mode", "mode": "text", "duration_minutes": 120 }
+```
+
+```json
+{ "action": "set_mode", "mode": "auto" }
+```
+
+Example tool calls:
+
+```json
+{ "action": "set_mode", "mode": "text", "duration_minutes": 120 }
+```
+
+```json
+{ "action": "set_mode", "mode": "auto" }
 ```
 
 #### 私聊策略（dmPolicy）与访问授权
@@ -994,6 +1071,7 @@ session:
 - **任务工具**：基于 Task v2 API 支持任务创建、获取详情、更新和删除
 - **群聊工具**：读写群公告、创建群聊、添加成员、检查机器人是否在群内、删除群聊（`feishu_chat`）
 - **加急通知工具**：发送应用内加急（buzz）、短信、语音电话加急通知（`feishu_urgent`）
+- **语音工具**：使用 `feishu_voice` 将文本合成为飞书语音消息，或检查本机 TTS 可用性
 - **@ 转发功能**：在消息中 @ 某人，机器人的回复会自动 @ 该用户
 - **权限错误提示**：当机器人遇到飞书 API 权限错误时，会自动通知用户并提供权限授权链接
 - **动态 Agent 创建**：每个私聊用户可拥有独立的 agent 实例和专属 workspace（可选）

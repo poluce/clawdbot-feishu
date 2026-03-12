@@ -14,7 +14,13 @@ import { getFeishuRuntime } from "./runtime.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { FeishuStreamingSession } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
-import { isTTSAvailable, sendVoiceMessage, shouldSendAsVoice, updateInteraction } from "./tts.js";
+import {
+  getTTSUnavailableReason,
+  isTTSAvailable,
+  sendVoiceMessage,
+  shouldSendAsVoice,
+  updateInteraction,
+} from "./tts.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
 
 /** Maximum age (ms) for a message to receive a typing indicator reaction.
@@ -38,6 +44,31 @@ function normalizeEpochMs(timestamp: number | undefined): number | undefined {
 /** Detect if text contains markdown elements that benefit from card rendering */
 function shouldUseCard(text: string): boolean {
   return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+}
+
+type FeishuDeliveryMode = "skip" | "voice" | "card" | "text";
+
+function resolveDeliveryMode(params: {
+  infoKind?: string;
+  streamingEnabled: boolean;
+  useCard: boolean;
+  wantsVoice: boolean;
+}): FeishuDeliveryMode {
+  const { infoKind, streamingEnabled, useCard, wantsVoice } = params;
+
+  if (infoKind === "block") {
+    return streamingEnabled && useCard ? "card" : "skip";
+  }
+
+  if (wantsVoice) {
+    return "voice";
+  }
+
+  if (useCard) {
+    return "card";
+  }
+
+  return "text";
 }
 
 export type CreateFeishuReplyDispatcherParams = {
@@ -242,33 +273,39 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         const useCard = renderMode === "card" || (renderMode === "auto" && shouldUseCard(text));
         const ttsEnabled = account.config?.tts?.enabled !== false;
         const forceVoice = account.config?.tts?.force === true;
-
-        if (info?.kind === "block") {
-          // Drop internal block chunks unless we can safely consume them as
-          // streaming-card fallback content (#31723).
-          if (!(streamingEnabled && useCard)) {
-            return;
-          }
-          startStreaming();
-          if (streamingStartPromise) {
-            await streamingStartPromise;
-          }
-        }
-
-        if (info?.kind === "final" && streamingEnabled && useCard) {
-          startStreaming();
-          if (streamingStartPromise) {
-            await streamingStartPromise;
-          }
-        }
-
-        if (
+        const ttsAvailable = ttsEnabled ? isTTSAvailable() : false;
+        const wantsVoice =
           info?.kind !== "block" &&
           !streamingEnabled &&
           ttsEnabled &&
-          isTTSAvailable() &&
-          (forceVoice || shouldSendAsVoice(text, userMessageText))
-        ) {
+          ttsAvailable &&
+          (forceVoice || shouldSendAsVoice(text, userMessageText));
+        let deliveryMode = resolveDeliveryMode({
+          infoKind: info?.kind,
+          streamingEnabled,
+          useCard,
+          wantsVoice,
+        });
+
+        if (deliveryMode === "skip") {
+          return;
+        }
+
+        if (deliveryMode === "card" && info?.kind === "block") {
+          startStreaming();
+          if (streamingStartPromise) {
+            await streamingStartPromise;
+          }
+        }
+
+        if (deliveryMode === "card" && info?.kind === "final" && streamingEnabled) {
+          startStreaming();
+          if (streamingStartPromise) {
+            await streamingStartPromise;
+          }
+        }
+
+        if (deliveryMode === "voice") {
           try {
             await sendVoiceMessage({
               cfg,
@@ -282,7 +319,14 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             params.runtime.error?.(
               `feishu[${account.accountId}] voice send failed, falling back to text: ${String(error)}`,
             );
+            deliveryMode = useCard ? "card" : "text";
           }
+        }
+
+        if (info?.kind !== "block" && forceVoice && ttsEnabled && !ttsAvailable) {
+          params.runtime.error?.(
+            `feishu[${account.accountId}] force voice requested but ${getTTSUnavailableReason() ?? "TTS is unavailable"}`,
+          );
         }
 
         if (streaming?.isActive()) {
@@ -299,7 +343,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
 
         let first = true;
-        if (useCard) {
+        if (deliveryMode === "card") {
           for (const chunk of core.channel.text.chunkTextWithMode(text, textChunkLimit, chunkMode)) {
             await sendMarkdownCardFeishu({
               cfg,

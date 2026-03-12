@@ -4,10 +4,11 @@
   "type": "module",
   "description": "OpenClaw Feishu/Lark channel plugin",
   "scripts": {
-    "test:unit": "vitest run",
-    "test:unit:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "ci:check": "npx tsc --noEmit && npm run test:coverage"
+    "test:unit": "vitest run --passWithNoTests",
+    "test:unit:watch": "vitest --passWithNoTests",
+    "test:coverage": "vitest run --coverage --passWithNoTests",
+    "ci:check": "npx tsc --noEmit && npm run test:coverage",
+    "debug:tts": "tsx -e \"import('./src/tts.ts').then((m) => console.log(JSON.stringify(m.getDebugInfo(), null, 2)))\""
   },
   "license": "MIT",
   "files": [

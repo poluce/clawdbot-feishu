@@ -57,16 +57,21 @@ function splitTrailingPunctuation(rawUrl: string): { url: string; trailing: stri
 }
 
 function wrapBareUrls(text: string): string {
-  // Normalize "<https://...>" to explicit markdown links for better Feishu stability.
+  // Preserve autolink boundaries by replacing them with placeholders first.
+  // This avoids the generic URL pass accidentally consuming following text,
+  // e.g. "<https://example.com>suffix" => "https://example.comsuffix".
+  const autoLinkPlaceholders: string[] = [];
   const convertedAutoLinks = text.replace(AUTO_LINK_RE, (_full, rawUrl: string) => {
     const { url, trailing } = splitTrailingPunctuation(rawUrl);
     if (!url) {
       return _full;
     }
-    return `${buildMarkdownLink(normalizeUrlForFeishu(url))}${trailing}`;
+    const marker = `\u0000AUTO_LINK_${autoLinkPlaceholders.length}\u0000`;
+    autoLinkPlaceholders.push(`${buildMarkdownLink(normalizeUrlForFeishu(url))}${trailing}`);
+    return marker;
   });
 
-  return convertedAutoLinks.replace(URL_RE, (raw, offset, input) => {
+  const wrapped = convertedAutoLinks.replace(URL_RE, (raw, offset, input) => {
     const { url, trailing } = splitTrailingPunctuation(raw);
     if (!url) {
       return raw;
@@ -80,6 +85,10 @@ function wrapBareUrls(text: string): string {
     }
 
     return `${buildMarkdownLink(normalizedUrl)}${trailing}`;
+  });
+
+  return wrapped.replace(/\u0000AUTO_LINK_(\d+)\u0000/g, (full, idx: string) => {
+    return autoLinkPlaceholders[Number(idx)] ?? full;
   });
 }
 

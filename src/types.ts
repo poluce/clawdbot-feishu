@@ -76,6 +76,8 @@ export type FeishuToolsConfig = {
   chat?: boolean;
   /** Enable the feishu_urgent tool (buzz/urgent notifications). Enabled by default. */
   urgent?: boolean;
+  /** Enable the feishu_voice tool (TTS voice synthesis + send). Enabled by default. */
+  voice?: boolean;
 };
 
 export type DynamicAgentCreationConfig = {

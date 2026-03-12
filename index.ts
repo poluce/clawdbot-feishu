@@ -10,6 +10,7 @@ import { registerFeishuTaskTools } from "./src/task-tools/index.js";
 import { registerFeishuChatTools } from "./src/chat-tools/index.js";
 import { registerFeishuUrgentTools } from "./src/urgent-tools/index.js";
 import { registerFeishuWikiTools } from "./src/wiki-tools/index.js";
+import { registerFeishuVoiceTools } from "./src/voice-tools/index.js";
 
 export { monitorFeishuProvider } from "./src/monitor.js";
 export {
@@ -34,6 +35,12 @@ export {
   FeishuEmoji,
 } from "./src/reactions.js";
 export { urgentMessageFeishu, type FeishuUrgentType } from "./src/urgent-tools/index.js";
+export {
+  getDebugInfo as getFeishuTTSDebugInfo,
+  getTTSAvailability as getFeishuTTSAvailability,
+  getTTSUnavailableReason,
+  isTTSAvailable,
+} from "./src/tts.js";
 export {
   extractMentionTargets,
   extractMessageBody,
@@ -64,6 +71,7 @@ const plugin = {
     registerFeishuTaskTools(api);
     registerFeishuChatTools(api);
     registerFeishuUrgentTools(api);
+    registerFeishuVoiceTools(api);
   },
 };
 

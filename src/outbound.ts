@@ -2,7 +2,7 @@ import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu } from "./send.js";
 import { sendMediaFeishu } from "./media.js";
-import { isTTSAvailable, sendVoiceMessage, shouldSendAsVoice } from "./tts.js";
+import { getTTSUnavailableReason, isTTSAvailable, sendVoiceMessage, shouldSendAsVoice } from "./tts.js";
 
 export const feishuOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
@@ -15,14 +15,20 @@ export const feishuOutbound: ChannelOutboundAdapter = {
       | undefined;
     const ttsEnabled = channelCfg?.tts?.enabled !== false;
     const forceVoice = channelCfg?.tts?.force === true;
+    const ttsAvailable = ttsEnabled ? isTTSAvailable() : false;
 
-    if (ttsEnabled && isTTSAvailable() && (forceVoice || shouldSendAsVoice(text))) {
+    if (ttsEnabled && ttsAvailable && (forceVoice || shouldSendAsVoice(text))) {
       try {
         const result = await sendVoiceMessage({ cfg, to, text, accountId });
         return { channel: "clawdbot_feishu", ...result };
       } catch (err) {
         console.error("[clawdbot_feishu] sendVoiceMessage failed, falling back to text:", err);
       }
+    }
+    if (ttsEnabled && forceVoice && !ttsAvailable) {
+      console.error(
+        `[clawdbot_feishu] force voice requested but ${getTTSUnavailableReason() ?? "TTS is unavailable"}`,
+      );
     }
     const result = await sendMessageFeishu({ cfg, to, text, accountId });
     return { channel: "clawdbot_feishu", ...result };

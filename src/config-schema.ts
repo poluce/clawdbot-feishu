@@ -91,6 +91,7 @@ const FeishuToolsConfigSchema = z
     task: z.boolean().optional(), // Task operations (default: true)
     chat: z.boolean().optional(), // Chat management operations (default: true)
     urgent: z.boolean().optional(), // Buzz/urgent notifications (default: true)
+    voice: z.boolean().optional(), // TTS voice send tool (default: true)
   })
   .strict()
   .optional();

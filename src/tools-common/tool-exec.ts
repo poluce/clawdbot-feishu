@@ -30,7 +30,7 @@ export function hasFeishuToolEnabledForAnyAccount(
 
 export function resolveToolAccount(cfg: ClawdbotConfig): ResolvedFeishuAccount {
   const context = getCurrentFeishuToolContext();
-  if (context?.channel === "feishu" && context.accountId) {
+  if (context?.channel === "clawdbot_feishu" && context.accountId) {
     // Message-driven path: use the account from AsyncLocalStorage context.
     return resolveFeishuAccount({ cfg, accountId: context.accountId });
   }

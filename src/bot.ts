@@ -1489,6 +1489,8 @@ export async function handleFeishuMessage(params: {
           accountId: account.accountId,
           sessionKey: route.sessionKey,
           senderOpenId: ctx.senderOpenId,
+          chatId: ctx.chatId,
+          replyToMessageId,
         },
         // Keep account context available while the agent executes plugin tools.
         () =>
@@ -1578,6 +1580,8 @@ export async function handleFeishuMessage(params: {
         accountId: account.accountId,
         sessionKey: route.sessionKey,
         senderOpenId: ctx.senderOpenId,
+        chatId: ctx.chatId,
+        replyToMessageId,
       },
       // Tool calls produced by this turn should resolve to the same inbound account.
       () =>
