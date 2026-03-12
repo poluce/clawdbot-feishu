@@ -22,7 +22,9 @@ export default defineConfig({
         "src/media-duration.ts",
         "src/voice-tools/actions.ts",
         "src/reply-dispatcher.ts",
-        "src/tts.ts"
+        "src/tts.ts",
+        "src/send.ts",
+        "src/media.ts"
       ],
       exclude: ["src/**/__tests__/**", "src/**/index.ts"]
     }
