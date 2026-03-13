@@ -18,6 +18,11 @@ describe("config-schema", () => {
     });
     expect(result.success).toBe(false);
     expect(result.error?.issues[0]?.path).toEqual(["allowFrom"]);
+
+    const missingAllowFrom = FeishuConfigSchema.safeParse({
+      dmPolicy: "open",
+    });
+    expect(missingAllowFrom.success).toBe(false);
   });
 
   it("accepts dmPolicy=open with wildcard allowFrom", () => {

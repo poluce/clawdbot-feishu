@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocked = vi.hoisted(() => {
-  const state: { deliver?: (payload: any, info?: any) => Promise<void> } = {};
+  const state: {
+    deliver?: (payload: any, info?: any) => Promise<void>;
+    replyHooks?: any;
+    typingHooks?: any;
+    streamingInstance?: any;
+  } = {};
   return {
     state,
     createReplyPrefixContext: vi.fn(() => ({
@@ -9,11 +14,14 @@ const mocked = vi.hoisted(() => {
       responsePrefixContextProvider: undefined,
       onModelSelected: vi.fn(),
     })),
-    createTypingCallbacks: vi.fn(() => ({
-      onReplyStart: vi.fn(),
-      onIdle: vi.fn(),
-      onCleanup: vi.fn(),
-    })),
+    createTypingCallbacks: vi.fn((hooks: any) => {
+      state.typingHooks = hooks;
+      return {
+        onReplyStart: vi.fn(),
+        onIdle: vi.fn(),
+        onCleanup: vi.fn(),
+      };
+    }),
     logTypingFailure: vi.fn(),
     resolveFeishuAccount: vi.fn(),
     createFeishuClient: vi.fn(() => ({})),
@@ -22,7 +30,16 @@ const mocked = vi.hoisted(() => {
     getFeishuRuntime: vi.fn(),
     sendMarkdownCardFeishu: vi.fn(),
     sendMessageFeishu: vi.fn(),
-    FeishuStreamingSession: vi.fn(),
+    FeishuStreamingSession: vi.fn((..._args: any[]) => {
+      const instance = {
+        start: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        isActive: vi.fn(() => true),
+      };
+      state.streamingInstance = instance;
+      return instance;
+    }),
     resolveReceiveIdType: vi.fn(() => "chat_id"),
     getTTSUnavailableReason: vi.fn(() => "TTS unavailable: missing edge-tts"),
     isTTSAvailable: vi.fn(),
@@ -88,7 +105,11 @@ vi.mock("../typing.js", () => ({
 
 import { createFeishuReplyDispatcher } from "../reply-dispatcher.js";
 
-function setupReplyDispatcher(configOverrides?: Record<string, unknown>) {
+function setupReplyDispatcher(
+  configOverrides?: Record<string, unknown>,
+  paramsOverrides?: Record<string, unknown>,
+  accountOverrides?: Record<string, unknown>,
+) {
   const runtime = {
     log: vi.fn(),
     error: vi.fn(),
@@ -108,6 +129,7 @@ function setupReplyDispatcher(configOverrides?: Record<string, unknown>) {
       },
       ...(configOverrides ?? {}),
     },
+    ...(accountOverrides ?? {}),
   });
 
   mocked.getFeishuRuntime.mockReturnValue({
@@ -123,6 +145,7 @@ function setupReplyDispatcher(configOverrides?: Record<string, unknown>) {
         resolveHumanDelayConfig: vi.fn(() => undefined),
         createReplyDispatcherWithTyping: vi.fn((params: any) => {
           mocked.state.deliver = params.deliver;
+          mocked.state.replyHooks = params;
           return {
             dispatcher: {},
             replyOptions: {},
@@ -133,7 +156,7 @@ function setupReplyDispatcher(configOverrides?: Record<string, unknown>) {
     },
   });
 
-  createFeishuReplyDispatcher({
+  const result = createFeishuReplyDispatcher({
     cfg: {} as any,
     agentId: "agent",
     runtime: runtime as any,
@@ -142,19 +165,25 @@ function setupReplyDispatcher(configOverrides?: Record<string, unknown>) {
     mentionTargets: [{ openId: "ou_1", name: "Alice", key: "@_user_1" }],
     accountId: "acc",
     userMessageText: "hello",
+    userInputMode: "text",
+    messageCreateTimeMs: Date.now(),
+    ...(paramsOverrides ?? {}),
   });
 
   if (!mocked.state.deliver) {
     throw new Error("deliver callback was not captured");
   }
 
-  return { runtime, deliver: mocked.state.deliver };
+  return { runtime, deliver: mocked.state.deliver, result };
 }
 
 describe("reply-dispatcher", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocked.state.deliver = undefined;
+    mocked.state.replyHooks = undefined;
+    mocked.state.typingHooks = undefined;
+    mocked.state.streamingInstance = undefined;
     mocked.isTTSAvailable.mockReturnValue(false);
     mocked.shouldSendAsVoice.mockReturnValue(false);
   });
@@ -164,6 +193,7 @@ describe("reply-dispatcher", () => {
     mocked.shouldSendAsVoice.mockReturnValue(true);
     const { deliver } = setupReplyDispatcher();
 
+    expect(mocked.updateInteraction).toHaveBeenCalledWith("text");
     await deliver({ text: "Short reply" }, { kind: "final" });
 
     expect(mocked.sendVoiceMessage).toHaveBeenCalledWith({
@@ -173,6 +203,14 @@ describe("reply-dispatcher", () => {
       replyToMessageId: "om_123",
       accountId: "acc",
     });
+    expect(mocked.sendMessageFeishu).not.toHaveBeenCalled();
+    expect(mocked.sendMarkdownCardFeishu).not.toHaveBeenCalled();
+  });
+
+  it("returns early for empty text payloads", async () => {
+    const { deliver } = setupReplyDispatcher();
+    await deliver({ text: "   " }, { kind: "final" });
+    expect(mocked.sendVoiceMessage).not.toHaveBeenCalled();
     expect(mocked.sendMessageFeishu).not.toHaveBeenCalled();
     expect(mocked.sendMarkdownCardFeishu).not.toHaveBeenCalled();
   });
@@ -238,5 +276,182 @@ describe("reply-dispatcher", () => {
     expect(mocked.sendVoiceMessage).not.toHaveBeenCalled();
     expect(mocked.sendMessageFeishu).not.toHaveBeenCalled();
     expect(mocked.sendMarkdownCardFeishu).not.toHaveBeenCalled();
+  });
+
+  it("starts streaming for block chunks in card mode", async () => {
+    const { deliver } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+    mocked.state.replyHooks.onReplyStart();
+
+    await deliver({ text: "block card" }, { kind: "block" });
+    expect(mocked.state.streamingInstance?.start).toHaveBeenCalled();
+  });
+
+  it("updates and closes streaming cards when streaming is enabled", async () => {
+    const { deliver, result } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+
+    mocked.state.replyHooks.onReplyStart();
+    expect(mocked.state.streamingInstance?.start).toHaveBeenCalledWith(
+      "oc_123",
+      "chat_id",
+      "om_123",
+    );
+
+    result.replyOptions.onPartialReply?.({ text: "partial 1" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocked.state.streamingInstance?.update).toHaveBeenCalledWith("partial 1");
+
+    await deliver({ text: "final text" }, { kind: "final" });
+    expect(mocked.state.streamingInstance?.close).toHaveBeenCalledWith("1:final text");
+  });
+
+  it("mirrors block text into active streaming sessions", async () => {
+    const { deliver } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+    mocked.state.replyHooks.onReplyStart();
+
+    await deliver({ text: "block text" }, { kind: "block" });
+    await mocked.state.replyHooks.onIdle();
+    expect(mocked.state.streamingInstance?.close).toHaveBeenCalledWith("1:block text");
+  });
+
+  it("ignores empty partial replies while streaming", async () => {
+    const { result } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+    mocked.state.replyHooks.onReplyStart();
+
+    result.replyOptions.onPartialReply?.({ text: "" });
+    await Promise.resolve();
+    expect(mocked.state.streamingInstance?.update).not.toHaveBeenCalled();
+  });
+
+  it("handles cumulative partial replies without duplicating trailing text", async () => {
+    const { result } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+    mocked.state.replyHooks.onReplyStart();
+
+    result.replyOptions.onPartialReply?.({ text: "hello" });
+    result.replyOptions.onPartialReply?.({ text: "hello world" });
+    await mocked.state.replyHooks.onIdle();
+
+    expect(mocked.state.streamingInstance?.close).toHaveBeenCalledWith("1:hello world");
+  });
+
+  it("skips streaming start when credentials are incomplete", async () => {
+    const { result } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    }, undefined, {
+      appId: undefined,
+      appSecret: undefined,
+    });
+
+    mocked.state.replyHooks.onReplyStart();
+    expect(mocked.FeishuStreamingSession).not.toHaveBeenCalled();
+    await result.replyOptions.onPartialReply?.({ text: "hello" });
+  });
+
+  it("logs streaming start failures", async () => {
+    mocked.FeishuStreamingSession.mockImplementationOnce(() => {
+      const instance = {
+        start: vi.fn().mockRejectedValue(new Error("stream start failed")),
+        update: vi.fn(),
+        close: vi.fn(),
+        isActive: vi.fn(() => false),
+      };
+      mocked.state.streamingInstance = instance;
+      return instance;
+    });
+    const { runtime } = setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+
+    mocked.state.replyHooks.onReplyStart();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(runtime.error).toHaveBeenCalledWith(
+      "feishu: streaming start failed: Error: stream start failed",
+    );
+  });
+
+  it("cleans up streaming sessions on error and idle", async () => {
+    setupReplyDispatcher({
+      renderMode: "card",
+      streaming: true,
+    });
+    mocked.state.replyHooks.onReplyStart();
+
+    await mocked.state.replyHooks.onError(new Error("boom"), { kind: "final" });
+    expect(mocked.state.streamingInstance?.close).toHaveBeenCalled();
+
+    mocked.state.replyHooks.onCleanup();
+    await mocked.state.replyHooks.onIdle();
+    expect(mocked.state.streamingInstance?.close).toHaveBeenCalled();
+  });
+
+  it("starts and stops typing indicators for fresh messages", async () => {
+    mocked.addTypingIndicator.mockResolvedValue({ reactionId: "r1" });
+    setupReplyDispatcher({ renderMode: "raw" });
+
+    await mocked.state.typingHooks.start();
+    expect(mocked.addTypingIndicator).toHaveBeenCalled();
+    await mocked.state.typingHooks.stop();
+    expect(mocked.removeTypingIndicator).toHaveBeenCalledWith({
+      cfg: {},
+      state: { reactionId: "r1" },
+      accountId: "acc",
+    });
+  });
+
+  it("skips typing indicator when replyToMessageId is missing", async () => {
+    setupReplyDispatcher({ renderMode: "raw" }, { replyToMessageId: undefined });
+    await mocked.state.typingHooks.start();
+    expect(mocked.addTypingIndicator).not.toHaveBeenCalled();
+  });
+
+  it("suppresses typing indicator start for stale messages", async () => {
+    mocked.addTypingIndicator.mockResolvedValue({ reactionId: "r1" });
+    setupReplyDispatcher(
+      { renderMode: "raw" },
+      { messageCreateTimeMs: Date.now() - 10 * 60_000 },
+    );
+
+    await mocked.state.typingHooks.start();
+    expect(mocked.addTypingIndicator).not.toHaveBeenCalled();
+  });
+
+  it("logs typing indicator failures through callbacks", async () => {
+    const startError = new Error("start failed");
+    const stopError = new Error("stop failed");
+    setupReplyDispatcher();
+    mocked.state.typingHooks.onStartError(startError);
+    mocked.state.typingHooks.onStopError(stopError);
+
+    expect(mocked.logTypingFailure).toHaveBeenNthCalledWith(1, {
+      log: expect.any(Function),
+      channel: "clawdbot_feishu",
+      action: "start",
+      error: startError,
+    });
+    expect(mocked.logTypingFailure).toHaveBeenNthCalledWith(2, {
+      log: expect.any(Function),
+      channel: "clawdbot_feishu",
+      action: "stop",
+      error: stopError,
+    });
   });
 });

@@ -20,6 +20,14 @@ function makeOggPage(granulePosition: number, payload: Buffer) {
   return Buffer.concat([header, payload]);
 }
 
+function makeVorbisPayload(sampleRate: number) {
+  const payload = Buffer.alloc(16);
+  payload.writeUInt8(0x01, 0);
+  payload.write("vorbis", 1, "ascii");
+  payload.writeUInt32LE(sampleRate, 12);
+  return payload;
+}
+
 function makeBox(type: string, payload: Buffer) {
   const header = Buffer.alloc(8);
   header.writeUInt32BE(payload.length + 8, 0);
@@ -58,6 +66,11 @@ describe("media-duration", () => {
     expect(parseFeishuMediaDurationMs(ogg, "opus")).toBe(1000);
   });
 
+  it("parses vorbis ogg duration", () => {
+    const ogg = makeOggPage(44_100, makeVorbisPayload(44_100));
+    expect(parseOggDurationMs(ogg)).toBe(1000);
+  });
+
   it("parses mp4 duration", () => {
     const mvhdPayload = Buffer.alloc(20);
     mvhdPayload.writeUInt8(0, 0);
@@ -67,6 +80,29 @@ describe("media-duration", () => {
 
     expect(parseMp4DurationMs(mp4)).toBe(2500);
     expect(parseFeishuMediaDurationMs(mp4, "mp4")).toBe(2500);
+  });
+
+  it("parses version 1 mp4 mvhd duration", () => {
+    const mvhdPayload = Buffer.alloc(32);
+    mvhdPayload.writeUInt8(1, 0);
+    mvhdPayload.writeUInt32BE(1000, 20);
+    mvhdPayload.writeUInt32BE(0, 24);
+    mvhdPayload.writeUInt32BE(3500, 28);
+    const mp4 = makeBox("moov", makeBox("mvhd", mvhdPayload));
+
+    expect(parseMp4DurationMs(mp4)).toBe(3500);
+  });
+
+  it("returns undefined for unsupported mvhd versions", () => {
+    const mvhdPayload = Buffer.alloc(32);
+    mvhdPayload.writeUInt8(2, 0);
+    const mp4 = makeBox("moov", makeBox("mvhd", mvhdPayload));
+    expect(parseMp4DurationMs(mp4)).toBeUndefined();
+  });
+
+  it("returns undefined when mvhd is absent from moov", () => {
+    const mp4 = makeBox("moov", makeBox("trak", Buffer.alloc(8)));
+    expect(parseMp4DurationMs(mp4)).toBeUndefined();
   });
 
   it("parses wav duration", () => {
@@ -80,5 +116,16 @@ describe("media-duration", () => {
     expect(parseOggDurationMs(invalid)).toBeUndefined();
     expect(parseMp4DurationMs(invalid)).toBeUndefined();
     expect(parseWavDurationMs(invalid)).toBeUndefined();
+  });
+
+  it("returns undefined for malformed container structure", () => {
+    const malformedOgg = makeOggPage(0, Buffer.from("OpusHead", "ascii"));
+    expect(parseOggDurationMs(malformedOgg)).toBeUndefined();
+
+    const malformedMp4 = makeBox("moov", Buffer.from("broken"));
+    expect(parseMp4DurationMs(malformedMp4)).toBeUndefined();
+
+    const malformedWav = Buffer.from("RIFF----WAVE");
+    expect(parseWavDurationMs(malformedWav)).toBeUndefined();
   });
 });

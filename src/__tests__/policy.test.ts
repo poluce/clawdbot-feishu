@@ -29,6 +29,21 @@ describe("policy", () => {
         senderName: "Alice",
       }),
     ).toEqual({ allowed: true, matchKey: "alice", matchSource: "name" });
+
+    expect(
+      resolveFeishuAllowlistMatch({
+        allowFrom: [],
+        senderId: "ou_2",
+      }),
+    ).toEqual({ allowed: false });
+
+    expect(
+      resolveFeishuAllowlistMatch({
+        allowFrom: ["bob"],
+        senderId: "ou_2",
+        senderName: "Alice",
+      }),
+    ).toEqual({ allowed: false });
   });
 
   it("resolves group config case-insensitively", () => {
@@ -43,7 +58,9 @@ describe("policy", () => {
     expect(resolveFeishuGroupConfig({ cfg, groupId: "oc_abc" })).toEqual({
       requireMention: false,
     });
+    expect(resolveFeishuGroupConfig({ cfg: undefined, groupId: "oc_abc" })).toBeUndefined();
     expect(resolveFeishuGroupConfig({ cfg, groupId: "unknown" })).toBeUndefined();
+    expect(resolveFeishuGroupConfig({ cfg, groupId: "" })).toBeUndefined();
   });
 
   it("returns group tool policy from channel config", () => {
@@ -63,6 +80,7 @@ describe("policy", () => {
     } as any);
 
     expect(policy).toEqual({ allow: ["feishu_doc"] });
+    expect(resolveFeishuGroupToolPolicy({ cfg: {} as any, groupId: "oc_123" } as any)).toBeUndefined();
   });
 
   it("checks group policy correctly", () => {
@@ -104,6 +122,19 @@ describe("policy", () => {
     ).toEqual({ requireMention: false, allowMentionlessInMultiBotGroup: true });
 
     expect(
+      resolveFeishuReplyPolicy({
+        isDirectMessage: false,
+      }),
+    ).toEqual({ requireMention: true, allowMentionlessInMultiBotGroup: false });
+
+    expect(
+      resolveFeishuReplyPolicy({
+        isDirectMessage: false,
+        groupConfig: { requireMention: false, allowMentionlessInMultiBotGroup: true } as any,
+      }),
+    ).toEqual({ requireMention: false, allowMentionlessInMultiBotGroup: true });
+
+    expect(
       resolveFeishuGroupCommandMentionBypass({
         globalConfig: { groupCommandMentionBypass: "always" } as any,
         groupConfig: { groupCommandMentionBypass: "never" } as any,
@@ -111,5 +142,15 @@ describe("policy", () => {
     ).toBe("never");
 
     expect(resolveFeishuGroupCommandMentionBypass({})).toBe("single_bot");
+    expect(
+      resolveFeishuGroupCommandMentionBypass({
+        globalConfig: { groupCommandMentionBypass: "always" } as any,
+      }),
+    ).toBe("always");
+    expect(
+      resolveFeishuGroupCommandMentionBypass({
+        groupConfig: { groupCommandMentionBypass: "never" } as any,
+      }),
+    ).toBe("never");
   });
 });

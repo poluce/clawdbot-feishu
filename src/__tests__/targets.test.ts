@@ -19,6 +19,10 @@ describe("targets", () => {
     expect(normalizeFeishuTarget("chat:oc_123")).toBe("oc_123");
     expect(normalizeFeishuTarget("user:ou_123")).toBe("ou_123");
     expect(normalizeFeishuTarget("open_id:ou_123")).toBe("ou_123");
+    expect(normalizeFeishuTarget("oc_123")).toBe("oc_123");
+    expect(normalizeFeishuTarget("chat:")).toBeNull();
+    expect(normalizeFeishuTarget("user:")).toBeNull();
+    expect(normalizeFeishuTarget("open_id:")).toBeNull();
     expect(normalizeFeishuTarget("   ")).toBeNull();
   });
 
@@ -36,6 +40,7 @@ describe("targets", () => {
     expect(looksLikeFeishuId("user:ou_123")).toBe(true);
     expect(looksLikeFeishuId("oc_123")).toBe(true);
     expect(looksLikeFeishuId("ou_123")).toBe(true);
+    expect(looksLikeFeishuId("   ")).toBe(false);
     expect(looksLikeFeishuId("not-an-id")).toBe(false);
   });
 });

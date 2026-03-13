@@ -32,4 +32,8 @@ describe("markdown links", () => {
     const result = normalizeFeishuMarkdownLinks("<https://example.com/a_b>suffix");
     expect(result).toBe("[https://example.com/a%5Fb](https://example.com/a%5Fb)suffix");
   });
+
+  it("returns the original text when there are no urls", () => {
+    expect(normalizeFeishuMarkdownLinks("plain text only")).toBe("plain text only");
+  });
 });

@@ -111,4 +111,24 @@ describe("accounts", () => {
     const accounts = listEnabledFeishuAccounts(cfg);
     expect(accounts.map((account) => account.accountId)).toEqual(["ready"]);
   });
+
+  it("falls back to top-level config when accounts map is missing", () => {
+    const cfg = {
+      channels: {
+        clawdbot_feishu: {
+          enabled: true,
+          appId: "cli_top",
+          appSecret: "top_secret",
+        },
+      },
+    } as any;
+
+    const account = resolveFeishuAccount({ cfg, accountId: "custom" });
+    expect(account).toMatchObject({
+      accountId: "custom",
+      configured: true,
+      appId: "cli_top",
+      appSecret: "top_secret",
+    });
+  });
 });

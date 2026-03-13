@@ -44,11 +44,14 @@ describe("mention", () => {
         key: "@_user_2",
       },
     ]);
+    expect(extractMentionTargets({ message: {} } as any, "ou_bot")).toEqual([]);
   });
 
   it("detects mention forwarding rules for groups and direct messages", () => {
     expect(isMentionForwardRequest(buildEvent("group"), "ou_bot")).toBe(true);
     expect(isMentionForwardRequest(buildEvent("p2p"), "ou_bot")).toBe(true);
+    expect(isMentionForwardRequest({ message: { mentions: [] } } as any, "ou_bot")).toBe(false);
+    expect(isMentionForwardRequest({ message: {} } as any, "ou_bot")).toBe(false);
     expect(
       isMentionForwardRequest(
         {
@@ -80,5 +83,7 @@ describe("mention", () => {
     const targets = [{ openId: "ou_alice", name: "Alice", key: "@_user_2" }];
     expect(buildMentionedMessage(targets, "hello")).toBe('<at user_id="ou_alice">Alice</at> hello');
     expect(buildMentionedCardContent(targets, "hello")).toBe("<at id=ou_alice></at> hello");
+    expect(buildMentionedMessage([], "hello")).toBe("hello");
+    expect(buildMentionedCardContent([], "hello")).toBe("hello");
   });
 });
