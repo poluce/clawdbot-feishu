@@ -1,0 +1,35 @@
+channels:
+  clawdbot_feishu:
+    enabled: true
+    appId: "cli_xxxxx"
+    appSecret: "your_app_secret"
+    domain: "feishu"
+    connectionMode: "websocket"
+    dmPolicy: "open"
+    allowFrom: ["*"]
+    groupPolicy: "allowlist"
+    groupAllowFrom: []
+    requireMention: true
+    allowMentionlessInMultiBotGroup: false
+    groupCommandMentionBypass: "single_bot"
+    mediaMaxMb: 30
+    renderMode: "auto"
+    tts:
+      enabled: true
+      force: false
+    tools:
+      doc: true
+      wiki: true
+      drive: true
+      perm: false
+      scopes: true
+      task: true
+      chat: true
+      urgent: true
+      voice: true
+
+# 说明：
+# 1. 如果测试群聊，请把 groupAllowFrom 填成目标 chat_id
+# 2. 如果测试语音，先跑 feishu_voice action=debug
+# 3. 如果测试纯文本回退，可把 tts.enabled 设为 false
+

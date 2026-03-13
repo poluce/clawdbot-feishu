@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>clawdbot_feishu LLMtest Bench</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div>
+          <h1>clawdbot_feishu 本地网页测试台</h1>
+          <p>不依赖 OpenClaw 宿主。默认只需要 App ID 和 App Secret，就能先跑探测、权限和目录发现测试。</p>
+        </div>
+        <div class="hero-actions">
+          <button id="healthBtn">健康检查</button>
+          <button id="probeBtn">连接探测</button>
+          <button id="scopesBtn">应用权限</button>
+          <button id="discoverUsersBtn">发现用户</button>
+          <button id="discoverChatsBtn">发现群聊</button>
+          <button id="ttsDebugBtn">TTS 自检</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel">
+          <h2>凭据与默认参数</h2>
+          <div class="grid two">
+            <label>App ID<input id="appId" placeholder="cli_xxxxx" /></label>
+            <label>App Secret<input id="appSecret" type="password" placeholder="your_app_secret" /></label>
+            <label>默认 Target<input id="target" placeholder="user:ou_xxx / chat:oc_xxx" /></label>
+            <label>Message ID<input id="messageId" placeholder="om_xxx" /></label>
+          </div>
+          <details class="advanced">
+            <summary>高级配置</summary>
+            <div class="grid two">
+              <label>Domain<input id="domain" value="feishu" placeholder="feishu / lark / https://..." /></label>
+              <label>Account ID<input id="accountId" placeholder="default" /></label>
+            </div>
+          </details>
+          <div class="grid two">
+            <label>启用 TTS
+              <select id="ttsEnabled">
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label>强制语音
+              <select id="ttsForce">
+                <option value="false">false</option>
+                <option value="true">true</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>自动发现</h2>
+          <label>搜索关键字<input id="discoverQuery" placeholder="留空时返回前 20 个用户或群聊" /></label>
+          <div class="grid two">
+            <div>
+              <h3>用户</h3>
+              <div id="usersList" class="discovery-list empty">还没有加载用户</div>
+            </div>
+            <div>
+              <h3>群聊</h3>
+              <div id="chatsList" class="discovery-list empty">还没有加载群聊</div>
+            </div>
+          </div>
+          <div class="note">点击发现结果可自动写入 Target。发送成功后，Message ID 会自动回填，便于继续测 urgent / get message。</div>
+        </section>
+
+        <section class="panel">
+          <h2>消息测试</h2>
+          <label>文本内容<textarea id="messageText" rows="5" placeholder="输入要发送的文本"></textarea></label>
+          <div class="actions">
+            <button id="sendTextBtn">发送文本</button>
+            <button id="sendMarkdownCardBtn">发送 Markdown 卡片</button>
+            <button id="sendVoiceBtn">发送语音</button>
+            <button id="getMessageBtn">获取消息</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>工具测试</h2>
+          <div class="toolbar">
+            <button data-family="doc" class="sampleBtn">Doc 示例</button>
+            <button data-family="drive" class="sampleBtn">Drive 示例</button>
+            <button data-family="wiki" class="sampleBtn">Wiki 示例</button>
+            <button data-family="chat" class="sampleBtn">Chat 示例</button>
+            <button data-family="perm" class="sampleBtn">Perm 示例</button>
+            <button data-family="bitable" class="sampleBtn">Bitable 示例</button>
+            <button data-family="task" class="sampleBtn">Task 示例</button>
+            <button data-family="urgent" class="sampleBtn">Urgent 示例</button>
+          </div>
+          <div class="grid two">
+            <label>工具族
+              <select id="toolFamily">
+                <option value="doc">doc</option>
+                <option value="drive">drive</option>
+                <option value="wiki">wiki</option>
+                <option value="chat">chat</option>
+                <option value="perm">perm</option>
+                <option value="bitable">bitable</option>
+                <option value="task">task</option>
+                <option value="urgent">urgent</option>
+              </select>
+            </label>
+            <div class="note">点击示例按钮会自动填充常见参数。</div>
+          </div>
+          <label>工具参数(JSON)<textarea id="toolParams" rows="12">{}</textarea></label>
+          <div class="actions">
+            <button id="runToolBtn">运行工具</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>响应输出</h2>
+          <div class="actions">
+            <button id="clearLogBtn">清空日志</button>
+          </div>
+          <pre id="output"></pre>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>
